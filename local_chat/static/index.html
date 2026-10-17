@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="local-chat-token" content="__SESSION_TOKEN__" />
+        <meta name="color-scheme" content="light dark" />
+        <meta name="theme-color" content="#101827" />
+        <title>Local Chat</title>
+        <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+        <link rel="stylesheet" href="/style.css" />
+        <script src="/app.js" defer></script>
+    </head>
+    <body>
+        <aside id="sidebar" class="sidebar" aria-label="Conversations">
+            <a class="brand" href="/" aria-label="Local Chat home"
+                ><span class="brand-mark"><span data-icon="globe"></span></span
+                ><span
+                    >Local Chat<small>Your model. Your space.</small></span
+                ></a
+            >
+            <button id="new-chat" class="new-chat">
+                <span aria-hidden="true">＋</span> New chat
+                <kbd>⌘ K</kbd>
+            </button>
+            <div class="sidebar-label">CONVERSATIONS</div>
+            <nav
+                id="history"
+                class="history"
+                aria-label="Conversation history"
+            ></nav>
+            <div class="sidebar-bottom">
+                <div class="engine-card">
+                    <span id="engine-dot" class="status-dot"></span>
+                    <div>
+                        <strong id="engine-model">No model loaded</strong
+                        ><small id="engine-detail"
+                            >Choose a GGUF to get started</small
+                        >
+                    </div>
+                </div>
+                <div class="sidebar-actions">
+                    <button id="settings-open" class="quiet-button">
+                        <span data-icon="settings"></span> Settings</button
+                    ><button
+                        id="theme-toggle"
+                        class="icon-button"
+                        aria-label="Toggle theme"
+                        title="Toggle theme"
+                    >
+                        <span data-icon="moon"></span>
+                    </button>
+                </div>
+                <span class="local-caption">Inference on your device</span>
+            </div>
+        </aside>
+        <button
+            id="sidebar-backdrop"
+            class="sidebar-backdrop"
+            aria-label="Close menu"
+            hidden
+        ></button>
+        <main class="main">
+            <header class="topbar">
+                <button
+                    id="menu-toggle"
+                    class="icon-button mobile-menu"
+                    aria-label="Open conversations"
+                >
+                    <span data-icon="menu"></span>
+                </button>
+                <button id="model-button" class="model-button">
+                    <span id="top-model">Local Chat</span
+                    ><span data-icon="chevron"></span>
+                </button>
+                <span class="privacy-badge"
+                    ><span class="tiny-dot"></span> On this device</span
+                >
+            </header>
+            <div
+                id="status-banner"
+                class="status-banner"
+                role="status"
+                hidden
+            ></div>
+            <div id="chat-scroll" class="chat-scroll">
+                <section id="welcome" class="welcome">
+                    <div class="welcome-mark" aria-hidden="true">
+                        <span data-icon="spark"></span>
+                    </div>
+                    <p class="eyebrow">A SPACE FOR YOUR IDEAS</p>
+                    <h1>What’s on your mind?</h1>
+                    <p class="welcome-description">
+                        Talk to your local model.<br />Explore the web whenever
+                        you need it.
+                    </p>
+                    <div class="suggestions">
+                        <button
+                            data-prompt="Explain how a language model works in simple terms."
+                            data-web="false"
+                        >
+                            <span data-icon="spark"></span
+                            ><strong>Understand a topic</strong
+                            ><small
+                                >A clear explanation, without the jargon</small
+                            ><span class="suggestion-arrow">↗</span>
+                        </button>
+                        <button
+                            data-prompt="Compare Python and Rust for a small command-line tool. Use their official documentation."
+                            data-web="true"
+                        >
+                            <span data-icon="globe"></span
+                            ><strong>Compare with sources</strong
+                            ><small>Explore a few perspectives on the web</small
+                            ><span class="suggestion-arrow">↗</span>
+                        </button>
+                        <button
+                            data-prompt="Help me organize ideas for a new project. Start by asking me a question."
+                            data-web="false"
+                        >
+                            <span data-icon="edit"></span
+                            ><strong>Develop an idea</strong
+                            ><small>Let’s think it through</small
+                            ><span class="suggestion-arrow">↗</span>
+                        </button>
+                    </div>
+                </section>
+                <section
+                    id="messages"
+                    class="messages"
+                    aria-label="Conversation messages"
+                    aria-busy="false"
+                ></section>
+            </div>
+            <div class="composer-area">
+                <div
+                    id="activity"
+                    class="activity"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <form id="composer" class="composer">
+                    <label class="sr-only" for="prompt">Your message</label>
+                    <textarea
+                        id="prompt"
+                        rows="1"
+                        maxlength="32000"
+                        placeholder="Message your local model…"
+                    ></textarea>
+                    <div class="composer-toolbar">
+                        <button
+                            id="web-toggle"
+                            class="web-toggle"
+                            type="button"
+                            aria-pressed="false"
+                            title="Search DuckDuckGo using the conversation topic and read relevant public pages"
+                        >
+                            <span data-icon="globe"></span> Web search
+                            <span
+                                class="toggle-track"
+                                aria-hidden="true"
+                            ></span>
+                        </button>
+                        <button
+                            id="send"
+                            class="send-button"
+                            type="submit"
+                            aria-label="Send message"
+                            title="Send"
+                        >
+                            <span data-icon="arrow-up"></span>
+                        </button>
+                        <button
+                            id="stop"
+                            class="send-button stop-button"
+                            type="button"
+                            aria-label="Stop response"
+                            title="Stop"
+                            hidden
+                        >
+                            <span class="stop-square"></span>
+                        </button>
+                    </div>
+                </form>
+                <p class="composer-note" id="composer-note">
+                    Responses can contain mistakes. Check important information.
+                </p>
+            </div>
+        </main>
+        <dialog
+            id="settings-dialog"
+            class="settings-dialog"
+            aria-labelledby="settings-title"
+        >
+            <div class="dialog-heading">
+                <div>
+                    <p class="eyebrow">YOUR LOCAL WORKSPACE</p>
+                    <h2 id="settings-title">Settings</h2>
+                </div>
+                <button
+                    class="icon-button"
+                    data-close="settings-dialog"
+                    aria-label="Close settings"
+                >
+                    <span data-icon="close"></span>
+                </button>
+            </div>
+            <form id="settings-form">
+                <label class="field-label" for="model-path">GGUF model</label>
+                <p class="field-help">
+                    Choose a file on this device. It stays in its original
+                    location.
+                </p>
+                <div class="path-control">
+                    <input
+                        id="model-path"
+                        type="text"
+                        placeholder="/path/to/model.gguf"
+                        required
+                        autocomplete="off"
+                        spellcheck="false"
+                    /><button
+                        id="browse-open"
+                        type="button"
+                        class="secondary-button"
+                    >
+                        <span data-icon="folder"></span> Browse
+                    </button>
+                </div>
+                <div class="context-heading">
+                    <label class="field-label" for="context-size"
+                        >Context size</label
+                    ><output id="context-value" for="context-size"
+                        >4,096 tokens</output
+                    >
+                </div>
+                <p class="field-help">
+                    Space shared by instructions, history, sources and response.
+                    A larger context uses more memory.
+                </p>
+                <input
+                    id="context-size"
+                    type="range"
+                    min="2048"
+                    max="8192"
+                    step="2048"
+                    value="4096"
+                />
+                <div class="range-labels">
+                    <span>2,048</span><span>4,096</span><span>6,144</span
+                    ><span>8,192</span>
+                </div>
+                <div class="threads-field">
+                    <div>
+                        <label class="field-label" for="threads"
+                            >CPU threads</label
+                        >
+                        <p class="field-help">
+                            4 by default. Adjust for your hardware.
+                        </p>
+                    </div>
+                    <input
+                        id="threads"
+                        type="number"
+                        min="1"
+                        max="256"
+                        value="4"
+                        required
+                    />
+                </div>
+                <div class="settings-info">
+                    <span data-icon="info"></span>
+                    <p>
+                        Your model and settings are remembered. Your model loads
+                        automatically the next time you launch the app.
+                    </p>
+                </div>
+                <p
+                    id="settings-error"
+                    class="form-error"
+                    role="alert"
+                    hidden
+                ></p>
+                <details id="logs-details">
+                    <summary>Engine log</summary>
+                    <pre id="logs">Expand to view the log.</pre>
+                </details>
+                <div class="dialog-footer">
+                    <span>Changing the model reloads the engine.</span
+                    ><button
+                        id="load-model"
+                        type="submit"
+                        class="primary-button"
+                    >
+                        Save &amp; load <span aria-hidden="true">→</span>
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <dialog
+            id="files-dialog"
+            class="files-dialog"
+            aria-labelledby="files-title"
+        >
+            <div class="dialog-heading">
+                <div>
+                    <p class="eyebrow">ON THIS DEVICE</p>
+                    <h2 id="files-title">Choose a model</h2>
+                </div>
+                <button
+                    class="icon-button"
+                    data-close="files-dialog"
+                    aria-label="Close file browser"
+                >
+                    <span data-icon="close"></span>
+                </button>
+            </div>
+            <form id="folder-form" class="folder-toolbar">
+                <button
+                    id="folder-home"
+                    type="button"
+                    class="icon-button"
+                    aria-label="Home folder"
+                    title="Home folder"
+                >
+                    <span data-icon="home"></span></button
+                ><button
+                    id="folder-up"
+                    type="button"
+                    class="icon-button"
+                    aria-label="Parent folder"
+                    title="Parent folder"
+                >
+                    <span data-icon="up"></span></button
+                ><label for="folder-path" class="sr-only">Folder path</label
+                ><input
+                    id="folder-path"
+                    spellcheck="false"
+                    autocomplete="off"
+                /><button class="secondary-button" type="submit">Open</button>
+            </form>
+            <div class="file-list-heading">
+                <span>Name</span><span>Size</span>
+            </div>
+            <div id="file-list" class="file-list" aria-live="polite"></div>
+            <div class="file-footer">
+                <span id="file-count">GGUF files only</span
+                ><span>No files are uploaded.</span>
+            </div>
+        </dialog>
+        <div id="toast" class="toast" role="status" hidden></div>
+    </body>
+</html>
