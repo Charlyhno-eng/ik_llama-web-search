@@ -537,6 +537,9 @@ struct llama_model {
     std::unordered_map<std::string, llama_hadamard_transform> hadamard_map;
     const llama_hadamard_transform * hadamard_rotation(const struct ggml_tensor * t) const;
 
+    // Give a tied CPU output matrix its own packed storage, leaving GET_ROWS unchanged.
+    bool repack_tied_output();
+
     struct ggml_tensor * tok_embd;
     struct ggml_tensor * type_embd;
     struct ggml_tensor * pos_embd;

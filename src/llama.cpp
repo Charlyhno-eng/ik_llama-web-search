@@ -5517,6 +5517,9 @@ static bool llm_load_tensors(
             }
         }
         LLAMA_LOG_INFO("============ Repacked %d tensors (%d skipped file-aliased)\n", n_repacked, n_skipped);
+        if (!dry_run) {
+            model.repack_tied_output();
+        }
     }
 
     if (model.arch == LLM_ARCH_BITNET) {

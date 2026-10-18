@@ -2,7 +2,7 @@
 
 Chat with local **GGUF models** in a simple web interface, with contextual **DuckDuckGo search** and clickable sources.
 
-A fork of [ikawrakow/ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp), itself derived from [llama.cpp](https://github.com/ggml-org/llama.cpp). Our addition is the local chat application; **the inference engine is unchanged**.
+A fork of [ikawrakow/ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp), itself derived from [llama.cpp](https://github.com/ggml-org/llama.cpp). Our additions include the local chat application and CPU optimizations for tied ternary output weights; see [Local Chat](docs/local-chat.md).
 
 ## Install
 

@@ -1694,11 +1694,13 @@ static void mul_mat_T_q8_k128(int n, const void * vx, size_t bx, const DataInfo&
     int nb = n / QK_PQ2_0;
     int ix0 = 0;
 #ifdef HAVE_FANCY_SIMD
-    if constexpr (nrc_y > 1) {
+    {
         __m512 acc[nrc_y] = {};
         __m512i sumi[nrc_y] = {};
         __m512i qx[8];
-        for (int ix = 0; ix < nrc_x; ix += 16) {
+        // Use the 16-row AVX-512 kernel during decode (nrc_y == 1) too.
+        // Leave incomplete groups to the eight-row fallback below.
+        for (int ix = 0; ix + 16 <= nrc_x; ix += 16) {
             auto iq2l = (const Block *)((const char *)vx + (ix+0)*bx);
             auto iq2h = (const Block *)((const char *)vx + (ix+8)*bx);
             for (int ib = 0; ib < nb; ++ib) {
@@ -1737,7 +1739,7 @@ static void mul_mat_T_q8_k128(int n, const void * vx, size_t bx, const DataInfo&
     __m256 acc[nrc_y] = {};
     __m256i sumi[nrc_y] = {};
     __m256i qx[4];
-    for (int ix = 0; ix < nrc_x; ix += QK_PQ2_0_R8_ROWS) {
+    for (int ix = 0; ix0 + ix < nrc_x; ix += QK_PQ2_0_R8_ROWS) {
         auto iq2 = (const Block *)((const char *)vx + (ix0+ix)*bx);
         for (int ib = 0; ib < nb; ++ib) {
             auto vd = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)iq2[ib].d));

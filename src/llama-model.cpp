@@ -1,8 +1,11 @@
 #include "llama-model.h"
 #include "llama-context.h"
 #include "llama-cparams.h"
+#include "ggml-alloc.h"
+#include "iqk/iqk_quantize.h"
 
 #include <map>
+#include <memory>
 
 static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NAMES = {
     {
@@ -2940,4 +2943,64 @@ const llama_hadamard_transform * llama_model::hadamard_rotation(const struct ggm
     }
     const auto it = hadamard_map.find(t->name);
     return it != hadamard_map.end() && it->second.block_size > 0 ? &it->second : nullptr;
+}
+
+bool llama_model::repack_tied_output() {
+    auto * original = output;
+    if (!original || !tok_embd || !original->data || !original->buffer ||
+            !ggml_is_contiguous(original) ||
+            ggml_backend_buffer_get_type(original->buffer) != ggml_backend_cpu_buffer_type() ||
+            (original != tok_embd && std::strcmp(original->name, tok_embd->name) != 0)) {
+        return false;
+    }
+
+    // These ternary formats have a decode kernel that benefits from a packed
+    // output. Other formats retain the existing path: copying their large tied
+    // heads did not show a generation benefit in the Qwen benchmarks.
+    if (original->type != GGML_TYPE_PQ2_0 && original->type != GGML_TYPE_PTQ1_0) {
+        return false;
+    }
+
+    // The embedding name is deliberately excluded by iqk_repack_tensor: GET_ROWS
+    // needs ordinary rows. Probe the output role without changing the source tensor.
+    ggml_tensor probe = *original;
+    ggml_set_name(&probe, "output.weight");
+    if ((ggml_type) iqk_repacked_type(&probe) == original->type) {
+        return false;
+    }
+
+    ggml_init_params params = { ggml_tensor_overhead(), nullptr, true };
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init(params), ggml_free);
+    if (!ctx) {
+        LLAMA_LOG_WARN("%s: no memory for packed output metadata; keeping original output\n", __func__);
+        return false;
+    }
+    auto * packed = ggml_dup_tensor(ctx.get(), original);
+    ggml_set_name(packed, "output.weight");
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buf(
+        ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), ggml_backend_cpu_buffer_type()),
+        ggml_backend_buffer_free);
+    if (!buf) {
+        LLAMA_LOG_WARN("%s: no memory for packed output; keeping original output\n", __func__);
+        return false;
+    }
+    ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    ggml_backend_tensor_get(original, packed->data, 0, ggml_nbytes(original));
+    std::memcpy(packed->op_params, original->op_params, sizeof(packed->op_params));
+    iqk_repack_tensor(packed);
+
+    // Preserve the GGUF identity for Hadamard transforms and LoRA lookup. Only the
+    // output pointer changes; embedding storage, including mmap aliases, stays intact.
+    ggml_set_name(packed, original->name);
+    ctxs.reserve(ctxs.size() + 1);
+    bufs.reserve(bufs.size() + 1);
+    ctxs.push_back(ctx.release());
+    bufs.push_back(buf.release());
+    output = packed;
+    if (output_mtp == original) {
+        output_mtp = packed;
+    }
+    LLAMA_LOG_INFO("%s: %s -> %s, %.2f MiB extra CPU weights\n", __func__,
+            ggml_type_name(original->type), ggml_type_name(packed->type), ggml_nbytes(packed) / 1048576.0);
+    return true;
 }
