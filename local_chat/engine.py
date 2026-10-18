@@ -166,6 +166,8 @@ class Engine:
                 str(value["context_size"]),
                 "--threads",
                 str(value["threads"]),
+                "--threads-batch",
+                str(value.get("threads_batch") or value["threads"]),
                 "--jinja",
                 "--reasoning-tokens",
                 "none",

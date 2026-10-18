@@ -26,6 +26,15 @@ class Upstream(BaseHTTPRequestHandler):
             self.respond({"tokens": list(range(len(body["content"]) // 4))})
         elif not body.get("stream"):
             self.server.last_plan = body
+            if "bodyplan" in body["messages"][-1]["content"]:
+                self.send_response(200)
+                self.send_header("Content-Length", "1000")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.flush()
+                self.server.prefill_started.set()
+                self.server.prefill_release.wait(timeout=5)
+                return
             if "slowplan" in body["messages"][-1]["content"]:
                 self.server.prefill_started.set()
                 self.server.prefill_release.wait(timeout=5)
@@ -268,7 +277,7 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "Cancellation must interrupt a silent upstream socket")
         self.assertIn(b"event: cancelled", result[0][1])
 
-    def test_contextual_followup_uses_planner_and_refreshes_previous_source(self):
+    def test_grounded_followup_skips_planner_and_refreshes_previous_source(self):
         url = "https://typesafe.ai/blog/jev-1-14"
         page = {
             "url": url,
@@ -299,7 +308,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b"event: done", stream)
         self.assertIn(b"1.14", stream)
-        self.assertEqual(self.upstream.last_plan["max_tokens"], 96)
+        self.assertFalse(hasattr(self.upstream, "last_plan"))
         self.assertIn("français", self.upstream.last_request["messages"][0]["content"])
         self.assertIn("Jev version 1.14", self.upstream.last_request["messages"][-1]["content"])
 
@@ -313,7 +322,7 @@ class HttpTests(unittest.TestCase):
                         "id": "rewrite",
                         "web": True,
                         "messages": [
-                            {"role": "user", "content": "What is Jev TypeSafe slowplan?"},
+                            {"role": "user", "content": "tell me about jev typesafe slowplan"},
                             {"role": "assistant", "content": "A model."},
                             {"role": "user", "content": "Is version 1.14 available?"},
                         ],
@@ -323,11 +332,26 @@ class HttpTests(unittest.TestCase):
         )
         thread.start()
         self.assertTrue(self.upstream.prefill_started.wait(timeout=3))
+        self.assertEqual(self.upstream.last_plan["max_tokens"], 48)
         self.request("/api/cancel", {"id": "rewrite"})
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
         self.assertIn(b"event: cancelled", result[0][1])
         self.assertFalse(hasattr(self.upstream, "last_request"))
+
+    def test_query_rewrite_timeout_falls_back_without_cancelling_answer(self):
+        from local_chat.chat import Job, rewrite_query
+        for content in ("slowplan", "bodyplan"):
+            with self.subTest(content=content):
+                job = Job("planner-timeout")
+                started = time.monotonic()
+                with patch("local_chat.chat.QUERY_REWRITE_SECONDS", 0.15):
+                    result = rewrite_query(self.engine, [
+                        {"role": "user", "content": content},
+                    ], {"query": "jev typesafe"}, job)
+                self.assertIsNone(result)
+                self.assertLess(time.monotonic() - started, 1.5)
+                self.assertFalse(job.cancelled.is_set())
 
     def test_invalid_prior_source_hints_are_rejected(self):
         for hints in (

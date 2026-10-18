@@ -87,6 +87,20 @@ class SettingsTests(unittest.TestCase):
         restored.path.write_text(json.dumps({**legacy, "temperature": True, "max_response_tokens": 0}))
         self.assertEqual(Settings(self.root).value, {**DEFAULT_SETTINGS, **legacy})
 
+    def test_prompt_threads_migrate_validate_and_persist(self):
+        settings = Settings(self.root)
+        base = {"model_path": str(self.model), "context_size": 4096, "threads": 6}
+        self.assertEqual(settings.validate(base)["threads_batch"], 0)
+        for threads in (0, 1, 8, 256):
+            value = settings.validate({**base, "threads_batch": threads})
+            settings.save(value)
+            self.assertEqual(Settings(self.root).value["threads_batch"], threads)
+        for invalid in (-1, 257, True, "8", None, 1.5):
+            with self.subTest(value=invalid), self.assertRaises(AppError):
+                settings.validate({**base, "threads_batch": invalid})
+        settings.path.write_text(json.dumps({**base, "threads_batch": -1}))
+        self.assertEqual(Settings(self.root).value["threads_batch"], 0)
+
 
 class SearchTests(unittest.TestCase):
     def test_lite_markup_redirects_entities_and_nested_text(self):
@@ -114,8 +128,8 @@ class SearchTests(unittest.TestCase):
                 + "</a>"
             )
         results = select_results([parser.results[0], parser.results[0]] + parser.results[1:])
-        self.assertEqual(len(results), 5)
-        self.assertEqual([item["id"] for item in results], [1, 2, 3, 4, 5])
+        self.assertEqual(len(results), 4)
+        self.assertEqual([item["id"] for item in results], [1, 2, 3, 4])
         self.assertLessEqual(
             sum(len(item["snippet"].split()) for item in results), MAX_SNIPPET_WORDS
         )
@@ -189,6 +203,25 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(budget["response_tokens"], 512)
         self.assertLessEqual(budget["prompt_tokens"] + budget["response_tokens"] + 64, 2048)
         self.assertEqual(history[0]["content"], "ancien " * 400)
+
+    def test_long_history_uses_logarithmic_exact_counts_and_keeps_maximum_turns(self):
+        history = []
+        for index in range(40):
+            history.extend([
+                {"role": "user", "content": f"Question {index}: " + "context " * 40},
+                {"role": "assistant", "content": "answer " * 40},
+            ])
+        history.append({"role": "user", "content": "Current question"})
+        engine = TokenEngine()
+        with patch.object(engine, "call", wraps=engine.call) as calls:
+            prepared, _, budget = budget_messages(engine, history, [])
+        self.assertLessEqual(calls.call_count, 16)
+        removed = budget["removed_turns"]
+        self.assertGreater(removed, 0)
+        self.assertLess(removed, 40)
+        self.assertEqual(prepared[1:], history[2 * removed:])
+        _, _, previous = budget_messages(TokenEngine(), history[2 * (removed - 1):], [])
+        self.assertEqual(previous["removed_turns"], 1)
 
     def test_sources_shrink_before_rejecting_current_question(self):
         sources = [

@@ -349,12 +349,28 @@ function markdown(text, sources) {
     return root;
 }
 
+let renderedChat = null;
+const messageNodes = new WeakMap();
+let lastMessageRender = 0;
+
 function renderMessages() {
     const chat = currentChat();
     $("welcome").hidden = !!chat?.messages.length;
-    $("messages").replaceChildren();
+    const container = $("messages");
+    if (renderedChat !== chat) {
+        container.replaceChildren();
+        renderedChat = chat;
+    }
     if (!chat) return;
+    // Storage trims the oldest pairs after 80 exchanges; drop their old DOM nodes.
+    if (container.firstChild && messageNodes.get(chat.messages[0])?.node !== container.firstChild)
+        container.replaceChildren();
     for (const message of chat.messages) {
+        const previous = messageNodes.get(message);
+        if (previous && !previous.pending && !message.pending) {
+            if (previous.node.parentNode !== container) container.append(previous.node);
+            continue;
+        }
         const article = element("article", `message ${message.role}`);
         if (message.role === "user") {
             article.append(element("div", "user-bubble", message.content));
@@ -490,8 +506,11 @@ function renderMessages() {
                 article.append(actions);
             }
         }
-        $("messages").append(article);
+        if (previous?.node.parentNode === container) previous.node.replaceWith(article);
+        else container.append(article);
+        messageNodes.set(message, { node: article, pending: !!message.pending });
     }
+    lastMessageRender = performance.now();
 }
 
 function render() {
@@ -503,14 +522,18 @@ function render() {
 function scheduleMessages() {
     if (scrollQueued) return;
     scrollQueued = true;
-    requestAnimationFrame(() => {
+    const chat = currentChat();
+    const active = chat?.messages.at(-1);
+    const firstText = active?.content && !messageNodes.get(active)?.node.querySelector(".message-body");
+    const delay = firstText ? 0 : Math.max(0, 80 - (performance.now() - lastMessageRender));
+    setTimeout(() => requestAnimationFrame(() => {
         const scroll = $("chat-scroll");
         const atBottom =
             scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 130;
         renderMessages();
         if (atBottom) scroll.scrollTop = scroll.scrollHeight;
         scrollQueued = false;
-    });
+    }), delay);
 }
 
 function updateControls() {
@@ -546,7 +569,7 @@ async function refreshStatus() {
         $("engine-model").title =
             active?.model_path || status.settings.model_path;
         $("engine-detail").textContent = active
-            ? `${active.context_size.toLocaleString("en-US")} tokens · ${active.threads} CPU threads`
+            ? `${active.context_size.toLocaleString("en-US")} tokens · CPU threads: ${active.threads} generation, ${active.threads_batch || active.threads} prompt`
             : {
                   idle: "Choose a GGUF to get started",
                   loading: "Loading model…",
@@ -589,6 +612,7 @@ function openSettings() {
     $("model-path").value = status.settings.model_path;
     $("context-size").value = status.settings.context_size;
     $("threads").value = status.settings.threads;
+    $("threads-batch").value = status.settings.threads_batch ?? 0;
     $("temperature").value = status.settings.temperature;
     $("max-response-tokens").value = status.settings.max_response_tokens;
     updateContext();
@@ -788,7 +812,11 @@ async function sendMessage(event) {
                     assistant.search = data.search;
                     $("activity").textContent = "Writing a response…";
                 }
-                if (kind === "token") assistant.content += data.text;
+                if (kind === "token") {
+                    const firstText = !assistant.content;
+                    assistant.content += data.text;
+                    if (firstText) renderMessages();
+                }
                 if (kind === "metrics") assistant.metrics = data;
                 if (kind === "error") throw new Error(data.message);
                 if (kind === "cancelled") {
@@ -921,6 +949,7 @@ $("settings-form").onsubmit = async (event) => {
             model_path: $("model-path").value,
             context_size: Number($("context-size").value),
             threads: Number($("threads").value),
+            threads_batch: Number($("threads-batch").value),
             temperature: Number($("temperature").value),
             max_response_tokens: Number($("max-response-tokens").value),
         });

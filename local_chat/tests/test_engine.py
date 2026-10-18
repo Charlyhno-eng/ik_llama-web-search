@@ -28,6 +28,31 @@ class EngineTests(unittest.TestCase):
                     self.assertIsNone(engine.process)
             engine.close()
 
+    def test_prompt_threads_are_passed_separately_and_zero_follows_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "model.gguf"
+            model.write_bytes(b"GGUF" + struct.pack("<I", 3))
+            engine = Engine(Settings(directory))
+            for requested, expected in ((0, "4"), (8, "8")):
+                value = engine.settings.validate({
+                    "model_path": str(model), "context_size": 4096,
+                    "threads": 4, "threads_batch": requested,
+                })
+                engine.operation.acquire()
+                process = Mock()
+                process.poll.return_value = None
+                with (
+                    patch.object(engine, "ensure_executable", return_value="llama-server"),
+                    patch.object(engine, "_stop_process"),
+                    patch.object(engine, "call", return_value={}),
+                    patch("local_chat.engine.subprocess.Popen", return_value=process) as popen,
+                ):
+                    engine._load(value)
+                self.assertEqual(engine.state, "ready")
+                command = popen.call_args.args[0]
+                self.assertEqual(command[command.index("--threads-batch") + 1], expected)
+                self.assertEqual(command[command.index("--threads") + 1], "4")
+
     def test_explicit_missing_binary_is_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             engine = Engine(Settings(directory))

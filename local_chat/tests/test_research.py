@@ -3,6 +3,7 @@
 from http.client import HTTPException
 import io
 import socket
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -308,10 +309,13 @@ class ResearchTests(unittest.TestCase):
 
     def test_direct_url_is_read_even_when_search_is_blocked(self):
         with (
-            patch("local_chat.search.search", side_effect=AppError("blocked", 502)),
+            patch("local_chat.search.search", side_effect=AppError("blocked", 502)) as searcher,
             patch("local_chat.search.read_page", return_value=page()) as reader,
         ):
             sources, info = research([{"role": "user", "content": "Read this: " + URL}])
+        searcher.assert_not_called()
+        self.assertEqual(info["queries"], [])
+        self.assertFalse(info["warnings"])
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["url"], URL)
         self.assertEqual(sources[0]["kind"], "page")
@@ -341,13 +345,16 @@ class ResearchTests(unittest.TestCase):
         self.assertTrue(info["warnings"])
 
     def test_rewrites_cannot_change_subject_or_drop_requested_version(self):
+        ambiguous = [dict(item) for item in FOLLOWUP]
+        ambiguous[0]["content"] = QUESTION.lower()
+        self.assertTrue(search_context(ambiguous)["needs_rewrite"])
         for bad in ("Minecraft 1.14", "Jev TypeSafe 1.13", "TypeSafe Minecraft 1.14"):
             with (
                 self.subTest(query=bad),
                 patch("local_chat.search.search", return_value=[source()]),
                 patch("local_chat.search.read_page", return_value=page()),
             ):
-                _, info = research(FOLLOWUP, rewrite=lambda plan: bad)
+                _, info = research(ambiguous, rewrite=lambda plan: bad)
                 self.assertNotEqual(info["queries"][0], bad)
                 self.assertIn("jev", info["queries"][0])
                 self.assertIn("1.14", info["queries"][0])
@@ -355,7 +362,7 @@ class ResearchTests(unittest.TestCase):
             patch("local_chat.search.search", return_value=[source()]),
             patch("local_chat.search.read_page", return_value=page()),
         ):
-            _, info = research(FOLLOWUP, rewrite=lambda plan: "Jev TypeSafe 1.14 official release")
+            _, info = research(ambiguous, rewrite=lambda plan: "Jev TypeSafe 1.14 official release")
             self.assertEqual(info["queries"][0], "Jev TypeSafe 1.14 official release")
 
     def test_results_are_deduplicated_diverse_and_bounded(self):
@@ -373,8 +380,8 @@ class ResearchTests(unittest.TestCase):
             ),
         ):
             sources, _ = research(FOLLOWUP)
-        self.assertEqual(len(sources), 5)
-        self.assertEqual(len({item["url"] for item in sources}), 5)
+        self.assertEqual(len(sources), 4)
+        self.assertEqual(len({item["url"] for item in sources}), 4)
         self.assertLessEqual(
             sum(item["url"].startswith("https://typesafe.ai/") for item in sources), 2
         )
@@ -382,7 +389,68 @@ class ResearchTests(unittest.TestCase):
             sum(len(item["snippet"].split()) for item in sources), MAX_SNIPPET_WORDS
         )
         self.assertFalse(any("minecraft" in item["url"] for item in sources))
-        self.assertEqual([item["id"] for item in sources], [1, 2, 3, 4, 5])
+        self.assertEqual([item["id"] for item in sources], [1, 2, 3, 4])
+
+    def test_four_read_pages_stop_extra_queries_and_link_exploration(self):
+        results = [source(f"https://publisher-{index}.example/jev") for index in range(8)]
+        def read(url, **kwargs):
+            result = page(url)
+            result["links"] = [{"title": "Jev TypeSafe release", "url": url + "/more"}]
+            return result
+        with (
+            patch("local_chat.search.search", return_value=results) as searcher,
+            patch("local_chat.search.read_page", side_effect=read) as reader,
+        ):
+            sources, info = research(FOLLOWUP)
+        self.assertEqual(len(sources), 4)
+        self.assertEqual(info["pages_read"], 4)
+        self.assertEqual(searcher.call_count, 1)
+        self.assertEqual(reader.call_count, 4)
+
+    def test_prior_page_reads_overlap_search(self):
+        reading, searching = threading.Event(), threading.Event()
+        overlap = []
+        def lookup(*args, **kwargs):
+            searching.set()
+            overlap.append(reading.wait(timeout=2))
+            return []
+        def read(url, **kwargs):
+            reading.set()
+            overlap.append(searching.wait(timeout=2))
+            return page(url)
+        with (
+            patch("local_chat.search.search", side_effect=lookup),
+            patch("local_chat.search.read_page", side_effect=read),
+        ):
+            sources, _ = research(FOLLOWUP, [source()])
+        self.assertEqual(sources[0]["url"], URL)
+        self.assertTrue(all(overlap))
+
+    def test_clear_followup_does_not_use_model_rewrite(self):
+        rewrite = MagicMock()
+        with (
+            patch("local_chat.search.search", return_value=[source()]),
+            patch("local_chat.search.read_page", return_value=page()),
+        ):
+            research(FOLLOWUP, rewrite=rewrite)
+        rewrite.assert_not_called()
+
+    def test_rewrite_uses_the_shared_retrieval_deadline(self):
+        now = [100.0]
+        ambiguous = [dict(item) for item in FOLLOWUP]
+        ambiguous[0]["content"] = QUESTION.lower()
+        def rewrite(plan):
+            self.assertEqual(plan["deadline"], 140.0)
+            now[0] = 141.0
+        with (
+            patch("local_chat.search.time.monotonic", side_effect=lambda: now[0]),
+            patch("local_chat.search.search") as searcher,
+            patch("local_chat.search.read_page") as reader,
+            self.assertRaises(AppError),
+        ):
+            research(ambiguous, rewrite=rewrite)
+        searcher.assert_not_called()
+        reader.assert_not_called()
 
     def test_stop_cancels_search_before_any_external_work(self):
         job = Job("cancelled")

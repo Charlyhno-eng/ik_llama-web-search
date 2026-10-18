@@ -1,6 +1,6 @@
 """Contextual DuckDuckGo search, relevance ranking, and public-page evidence."""
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from html.parser import HTMLParser
 from http.client import HTTPException
@@ -14,7 +14,8 @@ from urllib.request import Request, urlopen
 from .config import AppError
 from .retrieval import evidence_excerpt, read_page, terms, word_terms
 
-MAX_SNIPPET_WORDS = 750
+MAX_SOURCES = 4
+MAX_SNIPPET_WORDS = 600
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
@@ -89,7 +90,7 @@ class ResultParser(HTMLParser):
             self.capture = None
 
 
-def select_results(results, limit=5):
+def select_results(results, limit=MAX_SOURCES):
     selected, seen = [], set()
     for result in results:
         url = safe_url(result.get("url"))
@@ -113,7 +114,7 @@ def select_results(results, limit=5):
     return selected
 
 
-def search(query, limit=5):
+def search(query, limit=MAX_SOURCES, deadline=None):
     query = " ".join(query.split())[:500]
     if not query:
         raise AppError("The search query is empty.")
@@ -128,8 +129,11 @@ def search(query, limit=5):
             base + "?" + urlencode({"q": query, "kl": "wt-wt"}),
             headers={"User-Agent": USER_AGENT, "Accept-Language": "en,fr;q=0.8"},
         )
+        remaining = min(6, (deadline or float("inf")) - time.monotonic())
+        if remaining <= 0:
+            break
         try:
-            with urlopen(request, timeout=6) as response:
+            with urlopen(request, timeout=remaining) as response:
                 body = response.read(2_000_001)
                 if len(body) > 2_000_000:
                     continue
@@ -244,6 +248,10 @@ def search_context(messages, previous_sources=()):
         "direct": direct,
         "domains": list(dict.fromkeys(hints))[:1],
         "question": current,
+        # A named topic or a relevant prior domain already grounds the fallback.
+        "needs_rewrite": followup and not direct and not hints and not any(
+            word_terms(name) for name in re.findall(r"\b[A-Z][a-zA-Z0-9]{2,}\b", topic)
+        ),
     }
 
 
@@ -272,9 +280,13 @@ def mentions_version(text, version):
 
 
 def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
-    """Retrieve afresh on every turn; never fill five slots with unrelated results."""
+    """Retrieve up to four relevant sources, stopping once evidence is sufficient."""
+    deadline = time.monotonic() + 40
+    if job:
+        job.check()
     plan = search_context(messages, previous_sources)
-    if rewrite and plan["followup"] and not plan["direct"]:
+    plan["deadline"] = deadline
+    if rewrite and plan["needs_rewrite"]:
         rewritten = rewrite(plan)
         # Rewrites cannot discard the subject or the version requested by the user.
         needed_numbers = set(re.findall(r"\b\d+(?:\.\d+)+\b", plan["question"]))
@@ -289,7 +301,6 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
             and not urls_in(rewritten)
         ):
             plan["query"] = rewritten.strip()
-    deadline = time.monotonic() + 40
     queries = []
     warnings = []
     candidates = []
@@ -309,7 +320,7 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
     def lookup(query):
         check()
         try:
-            return search(query, limit=8)
+            return search(query, limit=8, deadline=deadline)
         except AppError as exc:
             if exc.status == 499:
                 raise
@@ -335,58 +346,13 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
         except (OSError, ValueError, HTTPException):
             return None
 
-    def read_candidates(items):
-        check()
-        fresh = []
-        for item in items:
-            if item["url"] not in attempted:
-                attempted.add(item["url"])
-                fresh.append(item)
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            for original, fetched in zip(fresh, pool.map(fetch, fresh)):
-                if fetched:
-                    pages[original["url"]] = fetched
-        check()
-
-    # Supplied URLs bypass search indexing: a fresh release may not be indexed yet.
+    requested_versions = re.findall(r"\b\d+\.\d+(?:\.\d+)*\b", plan["question"])
     if plan["direct"]:
-        stage("Reading the provided pages…")
-        direct = [
-            {"url": url, "title": urlsplit(url).hostname, "snippet": "", "_direct": True}
-            for url in plan["direct"]
-        ]
-        read_candidates(direct)
-        candidates.extend(page for page in pages.values())
-        if any(url not in pages for url in plan["direct"]):
-            warnings.append(
-                "A provided page could not be read; available search excerpts are used instead."
-            )
-
-    # Earlier retrieved URLs are navigation hints, not reusable facts. Read them again now.
-    if plan["followup"] and previous_sources:
-        seeds = [
-            {"url": url, "title": source.get("title", ""), "snippet": ""}
-            for source in previous_sources
-            if isinstance(source, dict) and (url := safe_url(source.get("url")))
-        ]
-        seeds = [item for item in seeds if relevance(item, plan["anchors"], plan["query"]) >= 0]
-        seeds.sort(key=lambda item: -relevance(item, plan["anchors"], plan["query"]))
-        stage("Revisiting relevant sources from this conversation…")
-        read_candidates(seeds[:3])
-        candidates.extend(pages[item["url"]] for item in seeds[:3] if item["url"] in pages)
-
-    stage("Searching DuckDuckGo with conversation context…")
-    initial = [plan["query"]]
-    initial += [f"site:{domain} {plan['query']}" for domain in plan["domains"]]
-    # A URL's hostname/path is a much better fallback than the surrounding 'this site says'.
-    if plan["direct"]:
-        parts = urlsplit(plan["direct"][0])
-        initial = [f"site:{parts.hostname} {parts.path.replace('/', ' ').replace('-', ' ')}"]
-    queries.extend(dict.fromkeys(initial))
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        for results in pool.map(lookup, queries):
-            candidates.extend(results)
-    check()
+        requested_versions = re.findall(r"\b\d+\.\d+(?:\.\d+)*\b", plan["query"])
+    version_question = bool(requested_versions) and (
+        plan["followup"] or plan["direct"]
+        or re.search(r"version|release|dispo|availab", plan["question"], re.I)
+    )
 
     def ranked():
         unique = {}
@@ -400,12 +366,124 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
             key = urlsplit(item["url"])._replace(fragment="", query="").geturl().rstrip("/")
             if key not in unique or item.get("kind") == "page":
                 unique[key] = {**item, "_score": score}
-        return sorted(unique.values(), key=lambda item: -item["_score"])
+        return sorted(unique.values(), key=lambda item: (-item["_score"], item["url"]))
 
-    stage("Reading and comparing relevant pages…")
-    read_candidates(ranked()[:6])
+    def selected_pages():
+        selected, hosts = [], {}
+        for item in ranked():
+            if item.get("kind") != "page":
+                continue
+            if version_question and not any(
+                mentions_version(item["title"] + " " + item["snippet"], version)
+                for version in requested_versions
+            ):
+                continue
+            host = urlsplit(item["url"]).hostname.removeprefix("www.")
+            if hosts.get(host, 0) >= 2 and not item.get("_direct"):
+                continue
+            hosts[host] = hosts.get(host, 0) + 1
+            selected.append(item)
+        return selected
+
+    def sufficient():
+        selected = selected_pages()
+        if version_question and not all(
+            any(mentions_version(item["title"] + " " + item["snippet"], version) for item in selected)
+            for version in requested_versions
+        ):
+            return False
+        # A page supplied for reading needs no indexing or unrelated cross-check.
+        direct_only = plan["direct"] and not re.search(
+            r"compar|cross.check|crois|independent|indépendant", plan["question"], re.I
+        )
+        if direct_only and all(url in pages for url in plan["direct"]):
+            return True
+        return len(selected) >= MAX_SOURCES
+
+    def read_candidates(items):
+        check()
+        if sufficient():
+            return
+        fresh = iter(item for item in items if item["url"] not in attempted)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            pending = {}
+            while time.monotonic() < deadline:
+                # Only start the number of reads still needed; refill on failure.
+                capacity = min(3, max(1, MAX_SOURCES - len(selected_pages())))
+                while len(pending) < capacity:
+                    item = next(fresh, None)
+                    if item is None:
+                        break
+                    if item["url"] in attempted:
+                        continue
+                    attempted.add(item["url"])
+                    pending[pool.submit(fetch, item)] = item
+                if not pending:
+                    break
+                future = next(as_completed(pending))
+                original = pending.pop(future)
+                fetched = future.result()
+                if fetched:
+                    pages[original["url"]] = fetched
+                    candidates.append(fetched)
+                check()
+                if sufficient():
+                    break
+            # Every started read is owned and joined, including on cancellation.
+            for future in as_completed(pending):
+                fetched = future.result()
+                if fetched:
+                    pages[pending[future]["url"]] = fetched
+                    candidates.append(fetched)
+        check()
+
+    if plan["direct"]:
+        stage("Reading the provided pages…")
+        direct = [
+            {"url": url, "title": urlsplit(url).hostname, "snippet": "", "_direct": True}
+            for url in plan["direct"]
+        ]
+        read_candidates(direct)
+        if any(url not in pages for url in plan["direct"]):
+            warnings.append("A provided page could not be read; available search excerpts are used instead.")
+
+    if not sufficient() and time.monotonic() < deadline:
+        seeds = []
+        if plan["followup"] and previous_sources:
+            seeds = [
+                {"url": url, "title": source.get("title", ""), "snippet": ""}
+                for source in previous_sources
+                if isinstance(source, dict) and (url := safe_url(source.get("url")))
+            ]
+            seeds = [item for item in seeds if relevance(item, plan["anchors"], plan["query"]) >= 0]
+            seeds.sort(key=lambda item: -relevance(item, plan["anchors"], plan["query"]))
+            seeds = [item for item in seeds[:3] if item["url"] not in attempted]
+        initial = [plan["query"]] + [f"site:{domain} {plan['query']}" for domain in plan["domains"]]
+        if plan["direct"]:
+            parts = urlsplit(plan["direct"][0])
+            initial = [f"site:{parts.hostname} {parts.path.replace('/', ' ').replace('-', ' ')}"]
+        queries.extend(dict.fromkeys(initial))
+        stage("Searching and revisiting relevant sources…" if seeds else "Searching DuckDuckGo with conversation context…")
+        # Prior-page reads and the two independent searches share the waiting time.
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            pending = {pool.submit(lookup, query): None for query in queries}
+            for item in seeds:
+                attempted.add(item["url"])
+                pending[pool.submit(fetch, item)] = item
+            for future in as_completed(pending):
+                item = pending[future]
+                result = future.result()
+                if item is None:
+                    candidates.extend(result)
+                elif result:
+                    pages[item["url"]] = result
+                    candidates.append(result)
+                check()
+        if not sufficient():
+            stage("Reading and comparing relevant pages…")
+            read_candidates(ranked()[:MAX_SOURCES])
+
     relevant = ranked()
-    # Second pass: a publisher/domain that matches the named subject gets a focused query.
     domains = list(plan["domains"])
     for item in relevant:
         host = urlsplit(item["url"]).hostname.removeprefix("www.")
@@ -416,21 +494,22 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
         targeted = f"site:{domains[0]} {plan['query']}"
         if targeted not in queries:
             extra.append(targeted)
-    if len(relevant) < 3:
-        fallback = compact_query(plan["query"]) + (" official" if len(relevant) == 0 else "")
+    if len(selected_pages()) < MAX_SOURCES:
+        fallback = compact_query(plan["query"]) + (" official" if not relevant else "")
         if fallback not in queries:
             extra.append(fallback)
-    if extra and time.monotonic() < deadline - 12:
+    if not sufficient() and extra and time.monotonic() < deadline - 12:
         stage("Cross-checking with focused searches…")
         queries.extend(extra[:2])
         with ThreadPoolExecutor(max_workers=2) as pool:
             for results in pool.map(lookup, extra[:2]):
                 candidates.extend(results)
-        read_candidates(ranked()[:7])
+        read_candidates(ranked()[:MAX_SOURCES * 2])
 
-    # Follow relevant links actually present on supplied/read pages, never guessed URLs.
     scanned = set()
     for _ in range(2):
+        if sufficient():
+            break
         links = []
         for page in list(pages.values()):
             if page["url"] in scanned:
@@ -448,19 +527,9 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
             break
         stage("Checking linked publisher pages…")
         links.sort(key=lambda item: -relevance(item, plan["anchors"], plan["query"]))
-        links = list({item["url"]: item for item in links}.values())[:2]
-        read_candidates(links)
-        candidates.extend(pages[link["url"]] for link in links if link["url"] in pages)
+        read_candidates(list({item["url"]: item for item in links}.values())[:2])
 
     final_candidates = ranked()
-    requested_versions = re.findall(r"\b\d+\.\d+(?:\.\d+)*\b", plan["question"])
-    if plan["direct"]:
-        requested_versions = re.findall(r"\b\d+\.\d+(?:\.\d+)*\b", plan["query"])
-    version_question = bool(requested_versions) and (
-        plan["followup"]
-        or plan["direct"]
-        or re.search(r"version|release|dispo|availab", plan["question"], re.I)
-    )
     if version_question:
         # Hard evidence gate: even a small model must never turn absent version evidence into "no".
         final_candidates = [
@@ -486,7 +555,7 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
             continue
         domains_count[host] = domains_count.get(host, 0) + 1
         selected.append(item)
-        if len(selected) == 5:
+        if len(selected) == MAX_SOURCES:
             break
     if not selected:
         raise AppError(
@@ -507,7 +576,7 @@ def research(messages, previous_sources=(), rewrite=None, job=None, emit=None):
     ]
     if all(source["kind"] == "snippet" for source in sources):
         warnings.append("Pages could not be read; this answer relies on search excerpts only.")
-    if len(failures) == len(queries):
+    if queries and len(failures) == len(queries):
         warnings.append(
             "DuckDuckGo search was unavailable; this answer uses public pages read directly."
         )

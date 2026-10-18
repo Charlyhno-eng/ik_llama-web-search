@@ -253,7 +253,7 @@
                 <div class="threads-field">
                     <div>
                         <label class="field-label" for="threads"
-                            >CPU threads</label
+                            >Generation CPU threads</label
                         >
                         <p class="field-help">
                             4 by default. Adjust for your hardware.
@@ -267,6 +267,13 @@
                         value="4"
                         required
                     />
+                </div>
+                <div class="threads-field generation-field">
+                    <div>
+                        <label class="field-label" for="threads-batch">Prompt CPU threads</label>
+                        <p class="field-help">0 uses generation threads. Tune separately for faster prompt preparation.</p>
+                    </div>
+                    <input id="threads-batch" type="number" min="0" max="256" value="0" required />
                 </div>
                 <div class="threads-field generation-field">
                     <div>

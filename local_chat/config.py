@@ -12,6 +12,7 @@ DEFAULT_SETTINGS = {
     "model_path": "",
     "context_size": 4096,
     "threads": 4,
+    "threads_batch": 0,
     "temperature": 0.5,
     "max_response_tokens": 1024,
 }
@@ -68,6 +69,8 @@ class Settings:
                 self.value["context_size"] = saved["context_size"]
             if type(saved.get("threads")) is int and 1 <= saved["threads"] <= 256:
                 self.value["threads"] = saved["threads"]
+            if type(saved.get("threads_batch")) is int and 0 <= saved["threads_batch"] <= 256:
+                self.value["threads_batch"] = saved["threads_batch"]
             if isinstance(saved.get("model_path"), str):
                 self.value["model_path"] = saved["model_path"]
             if valid_temperature(saved.get("temperature")):
@@ -85,6 +88,9 @@ class Settings:
         threads = data.get("threads", 4)
         if type(threads) is not int or not 1 <= threads <= 256:
             raise AppError("Thread count must be between 1 and 256.")
+        threads_batch = data.get("threads_batch", 0)
+        if type(threads_batch) is not int or not 0 <= threads_batch <= 256:
+            raise AppError("Prompt thread count must be between 0 and 256 (0 follows CPU threads).")
         temperature = data.get("temperature", DEFAULT_SETTINGS["temperature"])
         if not valid_temperature(temperature):
             raise AppError("Temperature must be a number between 0 and 2.")
@@ -95,6 +101,7 @@ class Settings:
             "model_path": gguf_path(data.get("model_path")),
             "context_size": data["context_size"],
             "threads": threads,
+            "threads_batch": threads_batch,
             "temperature": temperature,
             "max_response_tokens": response_tokens,
         }
