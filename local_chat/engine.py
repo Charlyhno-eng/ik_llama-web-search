@@ -168,6 +168,7 @@ class Engine:
                 str(value["threads"]),
                 "--threads-batch",
                 str(value.get("threads_batch") or value["threads"]),
+                "--run-time-repack",
                 "--jinja",
                 "--reasoning-tokens",
                 "none",
