@@ -9,7 +9,7 @@ import socket
 import threading
 import time
 
-from .config import AppError
+from .config import AppError, DEFAULT_SETTINGS
 from .search import research
 
 SYSTEM = """You are a helpful local assistant. Answer in the user's language, clearly and honestly.
@@ -188,7 +188,10 @@ def budget_messages(engine, history, sources):
     history = [message.copy() for message in history]
     sources = [source.copy() for source in sources]
     context = engine.active["context_size"]
-    reserve = min(1024, context // 4)
+    reserve = min(
+        engine.active.get("max_response_tokens", DEFAULT_SETTINGS["max_response_tokens"]),
+        context // 2,
+    )
     limit = context - reserve - 64  # BOS/template differences and server bookkeeping margin.
     removed = 0
     shortened = False
@@ -338,6 +341,7 @@ def generate(engine, messages, web, job, emit, previous_sources=()):
     job.check()
     emit("meta", {"sources": sources, "budget": budget, "search": search_info})
     payload = request_body(prepared)
+    payload["temperature"] = engine.active.get("temperature", DEFAULT_SETTINGS["temperature"])
     payload.update({"stream": True, "max_tokens": budget["response_tokens"]})
     connection = http.client.HTTPConnection("127.0.0.1", engine.port, timeout=120)
     generation_started = time.monotonic()

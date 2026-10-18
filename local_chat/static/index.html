@@ -268,11 +268,53 @@
                         required
                     />
                 </div>
+                <div class="threads-field generation-field">
+                    <div>
+                        <label class="field-label" for="temperature"
+                            >Temperature</label
+                        >
+                        <p class="field-help">
+                            0–2, default 0.5. Lower is more predictable; higher is
+                            more varied.
+                        </p>
+                    </div>
+                    <input
+                        id="temperature"
+                        type="number"
+                        min="0"
+                        max="2"
+                        step="0.01"
+                        value="0.5"
+                        required
+                    />
+                </div>
+                <div class="threads-field generation-field">
+                    <div>
+                        <label class="field-label" for="max-response-tokens"
+                            >Maximum response tokens</label
+                        >
+                        <p class="field-help">
+                            128–4,096, default 1,024. Capped at half the context to
+                            leave room for your question and sources. Longer
+                            answers take more time.
+                        </p>
+                    </div>
+                    <input
+                        id="max-response-tokens"
+                        type="number"
+                        min="128"
+                        max="4096"
+                        step="1"
+                        value="1024"
+                        required
+                    />
+                </div>
                 <div class="settings-info">
                     <span data-icon="info"></span>
                     <p>
                         Your model and settings are remembered. Your model loads
-                        automatically the next time you launch the app.
+                        automatically the next time you launch the app. Settings
+                        are saved locally in .local-chat/, excluded from Git.
                     </p>
                 </div>
                 <p

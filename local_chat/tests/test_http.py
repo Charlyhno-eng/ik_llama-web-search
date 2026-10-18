@@ -179,6 +179,17 @@ class HttpTests(unittest.TestCase):
         self.assertTrue(self.engine.operation.acquire(blocking=False))
         self.engine.operation.release()
 
+    def test_generation_uses_saved_temperature_and_response_limit(self):
+        self.engine.active.update({"temperature": 0.17, "max_response_tokens": 256})
+        code, stream, _ = self.request(
+            "/api/chat",
+            {"id": "custom-generation", "web": False, "messages": [{"role": "user", "content": "Hello"}]},
+        )
+        self.assertEqual(code, 200)
+        self.assertIn(b"event: done", stream)
+        self.assertEqual(self.upstream.last_request["temperature"], 0.17)
+        self.assertEqual(self.upstream.last_request["max_tokens"], 256)
+
     def test_failed_search_reports_error_without_inference(self):
         from local_chat.config import AppError
 

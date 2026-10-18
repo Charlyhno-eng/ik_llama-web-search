@@ -1,12 +1,28 @@
 """Small, atomic settings store and validation of local GGUF paths."""
 
 import json
+import math
 import os
 from pathlib import Path
 import struct
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTEXT_SIZES = (2048, 4096, 6144, 8192)
+DEFAULT_SETTINGS = {
+    "model_path": "",
+    "context_size": 4096,
+    "threads": 4,
+    "temperature": 0.5,
+    "max_response_tokens": 1024,
+}
+
+
+def valid_temperature(value):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 2
+
+
+def valid_response_tokens(value):
+    return type(value) is int and 128 <= value <= 4096
 
 
 class AppError(Exception):
@@ -42,7 +58,7 @@ class Settings:
         )
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.directory / "settings.json"
-        self.value = {"model_path": "", "context_size": 4096, "threads": 4}
+        self.value = DEFAULT_SETTINGS.copy()
         self.warning = ""
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8"))
@@ -54,6 +70,10 @@ class Settings:
                 self.value["threads"] = saved["threads"]
             if isinstance(saved.get("model_path"), str):
                 self.value["model_path"] = saved["model_path"]
+            if valid_temperature(saved.get("temperature")):
+                self.value["temperature"] = saved["temperature"]
+            if valid_response_tokens(saved.get("max_response_tokens")):
+                self.value["max_response_tokens"] = saved["max_response_tokens"]
         except FileNotFoundError:
             pass
         except (ValueError, OSError):
@@ -65,10 +85,18 @@ class Settings:
         threads = data.get("threads", 4)
         if type(threads) is not int or not 1 <= threads <= 256:
             raise AppError("Thread count must be between 1 and 256.")
+        temperature = data.get("temperature", DEFAULT_SETTINGS["temperature"])
+        if not valid_temperature(temperature):
+            raise AppError("Temperature must be a number between 0 and 2.")
+        response_tokens = data.get("max_response_tokens", DEFAULT_SETTINGS["max_response_tokens"])
+        if not valid_response_tokens(response_tokens):
+            raise AppError("Maximum response length must be between 128 and 4,096 tokens.")
         return {
             "model_path": gguf_path(data.get("model_path")),
             "context_size": data["context_size"],
             "threads": threads,
+            "temperature": temperature,
+            "max_response_tokens": response_tokens,
         }
 
     def save(self, value):

@@ -77,13 +77,13 @@ let booted = false;
 let lastState = null;
 let scrollQueued = false;
 let storageWarning = false;
-
 function persist() {
     try {
         localStorage.setItem(
             STORAGE_KEY,
             JSON.stringify({ conversations, currentId }),
         );
+        localStorage.removeItem("ik-local-chat.v1");
     } catch {
         if (!storageWarning)
             toast(
@@ -115,8 +115,22 @@ try {
                         ["user", "assistant"].includes(message.role) &&
                         typeof message.content === "string",
                 )
-                .slice(-160);
+                .slice(-160)
+                .map((message) => Object.fromEntries(
+                    Object.entries(message).filter(([key]) => [
+                        "role", "content", "sources", "pending", "note", "error",
+                        "budget", "metrics", "search",
+                    ].includes(key)),
+                ));
             for (const message of chat.messages) {
+                if (message.budget && typeof message.budget === "object") {
+                    message.budget = Object.fromEntries(
+                        Object.entries(message.budget).filter(([key]) => [
+                            "prompt_tokens", "response_tokens", "context_size",
+                            "removed_turns", "shortened_sources", "snippet_words",
+                        ].includes(key)),
+                    );
+                }
                 if (message.pending) {
                     message.pending = false;
                     message.note = "Response interrupted when the page closed.";
@@ -125,6 +139,7 @@ try {
             }
         }
         currentId = saved.currentId;
+        persist();
     }
 } catch {
     /* A corrupt or unavailable browser store must not prevent chatting. */
@@ -341,9 +356,9 @@ function renderMessages() {
     if (!chat) return;
     for (const message of chat.messages) {
         const article = element("article", `message ${message.role}`);
-        if (message.role === "user")
+        if (message.role === "user") {
             article.append(element("div", "user-bubble", message.content));
-        else {
+        } else {
             const label = element("div", "assistant-label");
             label.append(
                 element("span", "assistant-avatar"),
@@ -574,6 +589,8 @@ function openSettings() {
     $("model-path").value = status.settings.model_path;
     $("context-size").value = status.settings.context_size;
     $("threads").value = status.settings.threads;
+    $("temperature").value = status.settings.temperature;
+    $("max-response-tokens").value = status.settings.max_response_tokens;
     updateContext();
     $("settings-error").hidden = true;
     if (!$("settings-dialog").open) $("settings-dialog").showModal();
@@ -795,7 +812,9 @@ async function sendMessage(event) {
     } catch (error) {
         assistant.error = !stopping;
         assistant.note = stopping ? "Response stopped." : error.message;
-        if (!assistant.content && !stopping) $("prompt").value = question;
+        if (!assistant.content && !stopping) {
+            $("prompt").value = question;
+        }
     } finally {
         assistant.pending = false;
         busy = false;
@@ -902,6 +921,8 @@ $("settings-form").onsubmit = async (event) => {
             model_path: $("model-path").value,
             context_size: Number($("context-size").value),
             threads: Number($("threads").value),
+            temperature: Number($("temperature").value),
+            max_response_tokens: Number($("max-response-tokens").value),
         });
         $("settings-dialog").close();
         await refreshStatus();

@@ -105,6 +105,7 @@ lcov-report/
 
 # Python
 
+# Machine-local settings and logs; shared defaults live in local_chat/config.py.
 /.local-chat/
 /.venv
 __pycache__/

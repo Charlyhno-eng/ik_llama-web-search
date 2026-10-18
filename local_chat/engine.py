@@ -190,11 +190,12 @@ class Engine:
                     )
                 try:
                     self.call("/health", timeout=1)
-                    self.active = value.copy()
-                    self.state, self.message = "ready", "Ready"
-                    return
                 except (AppError, OSError):
                     self.closing.wait(0.3)
+                    continue
+                self.active = value.copy()
+                self.state, self.message = "ready", "Ready"
+                return
             raise AppError("Model loading was interrupted or exceeded ten minutes.")
         except (AppError, OSError) as exc:
             self._stop_process(self.process)

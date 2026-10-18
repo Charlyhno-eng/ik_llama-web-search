@@ -4,10 +4,10 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from local_chat.chat import budget_messages, validate_messages
-from local_chat.config import AppError, Settings, browse, gguf_path
+from local_chat.chat import Job, budget_messages, generate, validate_messages
+from local_chat.config import AppError, DEFAULT_SETTINGS, Settings, browse, gguf_path
 from local_chat.search import MAX_SNIPPET_WORDS, ResultParser, safe_url, search, select_results
 
 
@@ -67,6 +67,26 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(AppError):
             browse(str(self.model))
 
+    def test_generation_settings_defaults_migration_validation_and_persistence(self):
+        settings = Settings(self.root)
+        self.assertEqual(settings.value, DEFAULT_SETTINGS)
+        legacy = {"model_path": str(self.model), "context_size": 4096, "threads": 6}
+        settings.path.write_text(json.dumps(legacy))
+        restored = Settings(self.root)
+        self.assertEqual(restored.value, {**DEFAULT_SETTINGS, **legacy})
+        value = restored.validate({**legacy, "temperature": 0.23, "max_response_tokens": 2048})
+        restored.save(value)
+        self.assertEqual(Settings(self.root).value, value)
+        self.assertEqual(DEFAULT_SETTINGS["temperature"], 0.5)
+        for temperature in (-0.1, 2.1, True, "0.5", None, float("nan"), float("inf")):
+            with self.subTest(temperature=temperature), self.assertRaises(AppError):
+                restored.validate({**value, "temperature": temperature})
+        for tokens in (127, 4097, True, "1024", 1024.5, None):
+            with self.subTest(tokens=tokens), self.assertRaises(AppError):
+                restored.validate({**value, "max_response_tokens": tokens})
+        restored.path.write_text(json.dumps({**legacy, "temperature": True, "max_response_tokens": 0}))
+        self.assertEqual(Settings(self.root).value, {**DEFAULT_SETTINGS, **legacy})
+
 
 class SearchTests(unittest.TestCase):
     def test_lite_markup_redirects_entities_and_nested_text(self):
@@ -125,7 +145,7 @@ class SearchTests(unittest.TestCase):
 
 
 class TokenEngine:
-    active = {"context_size": 2048}
+    active = {"context_size": 2048, "max_response_tokens": 512}
 
     def call(self, path, data):
         if path == "/apply-template":
@@ -137,6 +157,25 @@ class TokenEngine:
 
 
 class BudgetTests(unittest.TestCase):
+    def test_generation_payload_uses_selected_settings_without_network(self):
+        engine = TokenEngine()
+        engine.active = {"context_size": 4096, "temperature": 0.17, "max_response_tokens": 256}
+        engine.port = 12345
+        response = MagicMock()
+        response.status = 200
+        response.__iter__.return_value = iter([
+            b'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":"stop"}],"usage":{"completion_tokens":1}}\n',
+            b'data: [DONE]\n',
+        ])
+        events = []
+        with patch("local_chat.chat.http.client.HTTPConnection") as connection:
+            connection.return_value.getresponse.return_value = response
+            generate(engine, [{"role": "user", "content": "Hello"}], False, Job("settings"), lambda kind, data: events.append((kind, data)))
+            payload = json.loads(connection.return_value.request.call_args.kwargs["body"])
+        self.assertEqual(payload["temperature"], 0.17)
+        self.assertEqual(payload["max_tokens"], 256)
+        self.assertEqual(events[-1][0], "done")
+
     def test_history_trimmed_as_complete_turns_and_response_reserved(self):
         history = [
             {"role": "user", "content": "ancien " * 400},
@@ -172,6 +211,14 @@ class BudgetTests(unittest.TestCase):
     def test_oversize_question_is_not_silently_cut(self):
         with self.assertRaisesRegex(AppError, "exceeds the available context"):
             budget_messages(TokenEngine(), [{"role": "user", "content": "longue " * 2000}], [])
+
+    def test_custom_response_budget_is_capped_and_reserves_prompt_space(self):
+        engine = TokenEngine()
+        for requested, expected in ((128, 128), (800, 800), (4096, 1024)):
+            engine.active = {"context_size": 2048, "max_response_tokens": requested}
+            _, _, budget = budget_messages(engine, [{"role": "user", "content": "Hello"}], [])
+            self.assertEqual(budget["response_tokens"], expected)
+            self.assertLessEqual(budget["prompt_tokens"] + expected + 64, 2048)
 
     def test_history_roles_and_types(self):
         valid = [{"role": "user", "content": "hello"}]

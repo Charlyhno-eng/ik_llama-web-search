@@ -4,6 +4,55 @@ Chat with local **GGUF models** in a simple web interface, with contextual **Duc
 
 A fork of [ikawrakow/ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp), itself derived from [llama.cpp](https://github.com/ggml-org/llama.cpp). Our addition is the local chat application; **the inference engine is unchanged**.
 
+## Install
+
+Requires **Python 3.10+**, **CMake** and a **C++20 compiler**. Install the prerequisites for your system once; no Python packages or Node.js are needed.
+
+### Windows (PowerShell)
+
+With [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+```powershell
+winget install --exact --id Git.Git
+winget install --exact --id Python.Python.3.13
+winget install --exact --id Kitware.CMake
+winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Wait for installation to finish, approve administrator prompts if requested, and reopen PowerShell. Restart Windows first if the installer requires it. The [C++ build tools](https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022) include the compiler and Windows SDK.
+
+### Linux (Ubuntu/Debian)
+
+```sh
+sudo apt update
+sudo apt install git python3 cmake build-essential
+```
+
+On other distributions, install equivalent packages. Check that `python3 --version` reports 3.10 or newer.
+
+### macOS (Terminal)
+
+Install Apple's command line tools, then wait for their installation dialog to complete:
+
+```sh
+xcode-select --install
+```
+
+If the tools are already installed, skip that step. With [Homebrew](https://brew.sh/) installed:
+
+```sh
+brew install python@3.13 cmake
+```
+
+### Download the project
+
+On any platform (skip this step if you already have the project):
+
+```sh
+git clone https://github.com/Charlyhno-eng/ik_llama-web-search.git
+cd ik_llama-web-search
+```
+
 ## Start
 
 From the project directory, on **Windows, Linux or macOS**:
@@ -12,17 +61,11 @@ From the project directory, on **Windows, Linux or macOS**:
 python start.py
 ```
 
-Your browser opens at **http://127.0.0.1:8080**. Open **Settings**, choose a `.gguf` file, and select **Save & load**. Your model and settings are remembered for the next launch. Press **Ctrl+C** in the terminal to stop the application and release the model.
+If your Python command is `python3`, use `python3 start.py`; on Windows, you can also use `py -3 start.py`.
 
-**Requirements:** Python 3.10+ available in your terminal. If your system names it `python3`, use `python3 start.py` (or `py -3 start.py` with the Windows Python launcher). No Bash, Python packages or Node.js are needed.
+Your browser opens at **http://127.0.0.1:8080**. Open **Settings**, choose a `.gguf` file, and select **Save & load**. Models are supplied separately. Your model and settings are remembered for the next launch. Press **Ctrl+C** in the terminal to stop the application and release the model.
 
-If no compiled `llama-server` is present, the application builds it on first model load; this can take several minutes. Install **CMake** and a **C++20 compiler** first:
-
-- **Windows:** Visual Studio 2022 Build Tools with **Desktop development with C++**, including the Windows SDK and CMake tools. Reopen your terminal after installation.
-- **Linux (Ubuntu/Debian):** `sudo apt install python3 cmake build-essential`.
-- **macOS:** Xcode Command Line Tools (`xcode-select --install`) and CMake.
-
-An existing native server binary avoids the build requirements. Linux/macOS binaries are named `llama-server`; Windows binaries are named `llama-server.exe`.
+If no compiled `llama-server` is present, the application builds it on first model load; this can take several minutes. An existing native server binary avoids the CMake/compiler requirements. Linux/macOS binaries are named `llama-server`; Windows binaries are named `llama-server.exe`.
 
 ## Features
 
@@ -34,8 +77,10 @@ An existing native server binary avoids the build requirements. Linux/macOS bina
 
 Inference stays local. Web mode sends contextual queries, which can include the subject of earlier messages, to DuckDuckGo and requests relevant public pages. Search results are cached in memory for three minutes; page content is read again. DuckDuckGo can block automated access, and some pages cannot be read. The app reports missing evidence and can still use directly readable sources; neither search coverage nor model accuracy is guaranteed.
 
-Settings and logs live in `.local-chat/` (ignored by Git). Conversations stay in your browser's local storage. Existing conversations and theme preferences are preserved across this update.
+Settings defaults: **4,096 context tokens**, **1,024 maximum response tokens**, **0.5 temperature** and **4 CPU threads**. All four are adjustable in Settings. Response length accepts 128–4,096 tokens and is capped at half the context; reserving more response tokens leaves less room for history and web sources. Temperature accepts 0–2: lower values are more predictable, higher values more varied; this does not guarantee accuracy.
 
-Other port: `python start.py --port 8081`. No automatic browser: `python start.py --no-browser`. Set the optional `LLAMA_SERVER` environment variable to use another native server executable. The previous `start.sh` remains a compatibility shortcut on Linux/macOS.
+Settings and logs live in `.local-chat/` (ignored by Git). Changing settings in the web interface never changes the shared defaults or tracked files, so ordinary commits and pushes exclude your local preferences and model path. Conversations stay in your browser's local storage. Existing conversations and theme preferences are preserved across this update.
 
-[Technical details and tests](docs/local-chat.md) · [Upstream documentation](README.upstream.md) · [MIT license](LICENSE)
+Other port: `python start.py --port 8081`. No automatic browser: `python start.py --no-browser`. Set the optional `LLAMA_SERVER` environment variable to use another native server executable.
+
+[Technical details and tests](docs/local-chat.md) · [MIT license](LICENSE)
