@@ -212,6 +212,7 @@ target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/g
 
 llama_build_and_test(test-tied-output.cpp)
 target_include_directories(test-tied-output PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
+llama_build_and_test(test-cpu-buffer.cpp)
 
 # llama_target_and_test(test-opt.cpp) # SLOW
 

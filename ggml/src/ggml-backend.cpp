@@ -17,6 +17,9 @@
 #include <chrono>
 #include <barrier>
 #include <thread>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 #ifdef GGML_USE_OPENMP
 #include <omp.h>
 #endif
@@ -703,8 +706,29 @@ GGML_CALL static const char * ggml_backend_cpu_buffer_type_get_name(ggml_backend
 }
 
 GGML_CALL static ggml_backend_buffer_t ggml_backend_cpu_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    if (size > SIZE_MAX - TENSOR_ALIGNMENT) {
+        return NULL;
+    }
     size += TENSOR_ALIGNMENT;   // malloc may return an address that is not aligned
-    void * data = malloc(size); // TODO: use GGML_ALIGNED_MALLOC (move to ggml-impl.h)
+    void * data = nullptr;
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    // Repacked weights use CPU allocations rather than file mappings. Align and
+    // advise large allocations before their first write so Linux can back them
+    // with transparent huge pages, without reserving privileged huge-page pools.
+    constexpr size_t huge_page_size = 2 * 1024 * 1024;
+    if (size >= huge_page_size && size <= SIZE_MAX - (huge_page_size - 1)) {
+        const size_t allocation_size = (size + huge_page_size - 1) & ~(huge_page_size - 1);
+        if (posix_memalign(&data, huge_page_size, allocation_size) == 0) {
+            if (madvise(data, allocation_size, MADV_HUGEPAGE) != 0) {
+                free(data);
+                data = nullptr;
+            }
+        }
+    }
+#endif
+    if (data == nullptr) {
+        data = malloc(size);
+    }
     if (data == NULL) {
         fprintf(stderr, "%s: failed to allocate buffer of size %zu\n", __func__, size);
         return NULL;

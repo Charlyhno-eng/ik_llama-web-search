@@ -52,7 +52,15 @@ The server binds only to `127.0.0.1`. APIs require a per-launch random token; Ho
 
 Public-page requests reject credentials, non-HTTP(S) schemes, nonstandard ports and all private/loopback/link-local/multicast destinations. DNS results are validated and connections are pinned to the validated address while retaining TLS hostname verification. Redirect targets are validated again. Environment proxies are not used for page reads. Cancellation shuts down owned sockets, including local query rewriting and active public-page connections; an in-progress DuckDuckGo request may finish its current timeout.
 
+## Linux CPU memory
+
+Large CPU buffers automatically request transparent huge pages on Linux, including weights allocated by runtime repacking. Buffers of at least 2 MiB (including alignment padding) use a 2 MiB-aligned allocation rounded up to a multiple of 2 MiB, with `MADV_HUGEPAGE` applied before initialization. If alignment allocation or the advice fails, the engine uses ordinary `malloc`; if the kernel accepts the advice but cannot provide huge pages, the allocation remains usable with normal pages. Other platforms and small buffers retain ordinary allocation. No system setting, root privilege, model filename rule or GGUF modification is required. Rounded allocations can consume up to approximately 2 MiB extra per large buffer.
+
+This also covers the repacking path that disables `mmap`, which the existing file-mapping `--transparent-huge-pages` option does not cover. Short local tests on the i7-1195G7 measured an additional 4.7% on Bonsai 2B PQ2 (six measured generations per variant, including a reverse-order pass), 2.7% on Bonsai 4B PQ2, and no significant gain on Qwen 2B Q5. These are measurements of the prototype allocation strategy against the previously optimized engine, not guaranteed gains for every model or conversation.
+
 ## Validation
+
+With `LLAMA_BUILD_TESTS=ON`, build `test-cpu-buffer` and run `ctest --test-dir build -R '^test-cpu-buffer$' --output-on-failure` to check CPU allocation, alignment, clearing, size boundaries and overflow rejection. The test also works when huge pages are unavailable.
 
 Offline automated checks:
 
