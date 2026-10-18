@@ -11658,15 +11658,22 @@ void repack_pq2_0_r8(int nrows, int n_per_row, const block_pq2_0 * GGML_RESTRICT
         for (int k = 0; k < QK_PQ2_0_R8_ROWS; ++k) xr[k] = x + (size_t)k*nblock;
         for (int ib128 = 0; ib128 < nblock; ++ib128) {
             auto yb = y + ib128;
-            memset(yb, 0, sizeof(*yb));
             for (int k = 0; k < QK_PQ2_0_R8_ROWS; ++k) yb->d[k] = xr[k][ib128].d;
             for (int ib32 = 0; ib32 < QK_PQ2_0/32; ++ib32) {
-                for (int l = 0; l < 8; ++l) {
+                for (int half = 0; half < 2; ++half) {
                     for (int k = 0; k < QK_PQ2_0_R8_ROWS; ++k) {
+                        const auto * src = xr[k][ib128].qs + 8*ib32 + 4*half;
+                        // Transpose a 4x4 matrix of two-bit values. Explicit byte
+                        // assembly also keeps the mapping independent of endianness.
+                        uint32_t v = uint32_t(src[0]) | (uint32_t(src[1]) << 8) |
+                                     (uint32_t(src[2]) << 16) | (uint32_t(src[3]) << 24);
+                        uint32_t t = (v ^ (v >> 6)) & 0x00cc00ccu;
+                        v ^= t ^ (t << 6);
+                        t = (v ^ (v >> 12)) & 0x0000f0f0u;
+                        v ^= t ^ (t << 12);
+                        auto * dst = yb->qs + 64*ib32 + 32*half + 4*k;
                         for (int i = 0; i < 4; ++i) {
-                            int p = 32*ib32 + 4*l + i;
-                            int q = (xr[k][ib128].qs[p>>2] >> (2*(p&3))) & 3;
-                            yb->qs[64*ib32 + 32*(l/4) + 4*k + i] |= (q << 2*(l%4));
+                            dst[i] = uint8_t(v >> (8*i));
                         }
                     }
                 }

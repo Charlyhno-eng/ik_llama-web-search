@@ -86,6 +86,48 @@ static void test_format(ggml_type type, int group_rows, bool same_tensor = false
     std::printf("%s: weights, embeddings, Hadamard identity and eligibility OK\n", ggml_type_name(type));
 }
 
+static void test_pq2_repack_layout() {
+    // Compare every packed byte with a scalar reference, including all two-bit
+    // codes and multiple row groups/blocks. Prefill output to detect unwritten bytes.
+    for (int width : { 128, 256, 5120 }) {
+        for (int rows : { 8, 24, 264 }) {
+            const int blocks = width / QK_PQ2_0;
+            std::vector<block_pq2_0> input(rows * blocks);
+            uint32_t state = 42;
+            for (auto & block : input) {
+                block.d = ggml_fp32_to_fp16(0.25f + float(state % 16));
+                for (auto & byte : block.qs) {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    byte = uint8_t(state);
+                }
+            }
+            std::vector<block_pq2_0_r8> expected(rows / 8 * blocks), actual(expected.size());
+            std::memset(actual.data(), 0xa5, actual.size() * sizeof(actual[0]));
+            for (int group = 0; group < rows / 8; ++group) {
+                for (int block = 0; block < blocks; ++block) {
+                    auto & dst = expected[group * blocks + block];
+                    for (int k = 0; k < 8; ++k) {
+                        const auto & src = input[(group * 8 + k) * blocks + block];
+                        dst.d[k] = src.d;
+                        for (int p = 0; p < QK_PQ2_0; ++p) {
+                            const int ib32 = p / 32;
+                            const int l = (p % 32) / 4;
+                            const int i = p % 4;
+                            const int q = (src.qs[p / 4] >> (2 * (p % 4))) & 3;
+                            dst.qs[64 * ib32 + 32 * (l / 4) + 4 * k + i] |= q << (2 * (l % 4));
+                        }
+                    }
+                }
+            }
+            repack_pq2_0_r8(rows, width, input.data(), actual.data(), false);
+            check(std::memcmp(expected.data(), actual.data(), actual.size() * sizeof(actual[0])) == 0,
+                    "PQ2 repacking differs from scalar reference");
+        }
+    }
+}
+
 static void test_ternary_matmul(ggml_type type, int rows, int tokens) {
     constexpr int width = 256;
     ggml_init_params params = { 1024 * 1024, nullptr, false };
@@ -130,6 +172,7 @@ static void test_ternary_matmul(ggml_type type, int rows, int tokens) {
 
 int main() {
     ggml_time_init();
+    test_pq2_repack_layout();
     test_format(GGML_TYPE_PQ2_0, 8);
     test_format(GGML_TYPE_PQ2_0, 8, true);
     test_format(GGML_TYPE_PTQ1_0, 8);
@@ -137,7 +180,9 @@ int main() {
     test_format(GGML_TYPE_Q6_K, 4);
     test_format(GGML_TYPE_F32, 1);
     for (auto type : { GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0 }) {
-        for (int rows : { 8, 16, 24, 40 }) {
+        // Include several 64-row repacking chunks and an incomplete last chunk
+        // to exercise both multiple workers and uneven work distribution.
+        for (int rows : { 8, 16, 24, 40, 72, 264 }) {
             for (int tokens : { 1, 2, 3 }) {
                 test_ternary_matmul(type, rows, tokens);
             }
