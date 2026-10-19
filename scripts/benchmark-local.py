@@ -15,6 +15,9 @@ Configuration example (repeat variants in reverse order for an ABBA comparison):
 Set "interleave": true with two variants to keep both servers loaded and alternate
 requests in ABBA order (one generation at a time). Otherwise servers run serially.
 Variants also accept threads_batch, args (additional server arguments), and env.
+Optional prompt_text and padding_text replace the default synthetic French prompt.
+Alternatively messages applies the model's chat template and uses the complete prompt.
+chat_template_kwargs passes template options such as enable_thinking to that template.
 Only the standard library and an existing model/server are required. Each server
 is stopped in a finally block. Warmups are recorded but excluded from summaries.
 """
@@ -99,9 +102,18 @@ def server(variant, model, output, index):
 def measure(config, servers, model, output):
     rows = []
     port = servers[0][1]
-    base = call(port, "/tokenize", {"content": QUESTION})["tokens"]
-    padding = call(port, "/tokenize", {"content": PADDING * 700})["tokens"]
-    for length in config.get("lengths", [64, 512, 2048]):
+    text = config.get("prompt_text", QUESTION)
+    if "messages" in config:
+        text = call(port, "/apply-template", {
+            "messages": config["messages"],
+            "chat_template_kwargs": config.get("chat_template_kwargs", {}),
+        })["prompt"]
+    base = call(port, "/tokenize", {"content": text})["tokens"]
+    padding = call(port, "/tokenize", {"content": config.get("padding_text", PADDING) * 700})["tokens"]
+    lengths = [len(base)] if "messages" in config else config.get("lengths", [64, 512, 2048])
+    for length in lengths:
+        if length + config.get("predict", 128) > 4096:
+            raise ValueError("Prompt and generated tokens exceed the benchmark context")
         prompt = (base + padding)[:length]
         if len(prompt) != length:
             raise ValueError("Not enough padding tokens for requested prompt length")
@@ -125,6 +137,7 @@ def measure(config, servers, model, output):
                     raise RuntimeError("Invalid engine timing")
                 row = {
                     "variant": variant["name"], "model": Path(model).name,
+                    "case": config.get("case", "synthetic"),
                     "prompt_length": length, "run": run, "warmup": run == 0,
                     "elapsed": elapsed, "timings": timings,
                     "tokens_predicted": response.get("tokens_predicted"),
