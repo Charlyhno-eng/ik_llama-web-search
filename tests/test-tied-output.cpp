@@ -3,6 +3,7 @@
 #include "ggml-quants.h"
 #include "iqk/iqk_mul_mat.h"
 #include "iqk/iqk_quantize.h"
+#include "iqk/iqk_cpu_ops.h"
 
 #include <cmath>
 #include <cstdio>
@@ -170,6 +171,52 @@ static void test_ternary_matmul(ggml_type type, int rows, int tokens) {
     ggml_free(ctx);
 }
 
+static void test_hadamard(ggml_type type, int block_size) {
+    const int width = block_size * 3;
+    ggml_init_params params = { 8 * 1024 * 1024, nullptr, false };
+    auto * ctx = ggml_init(params);
+    auto * src = ggml_new_tensor_3d(ctx, type, width, 3, 2);
+    std::vector<float> input(ggml_nelements(src)), expected(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        input[i] = std::sin(float(i) * 0.37f) * float(int(i % 7) - 3);
+    }
+    if (type == GGML_TYPE_F32) {
+        std::memcpy(src->data, input.data(), input.size() * sizeof(float));
+        expected = input;
+    } else {
+        auto traits = ggml_internal_get_type_traits(type);
+        traits.from_float_ref(input.data(), src->data, input.size());
+        traits.to_float(src->data, expected.data(), expected.size());
+    }
+    std::vector<char> saved(ggml_nbytes(src));
+    std::memcpy(saved.data(), src->data, saved.size());
+    for (size_t offset = 0; offset < expected.size(); offset += block_size) {
+        float scale = 1;
+        for (int h = 1; h < block_size; h *= 2) {
+            for (int i = 0; i < block_size; i += 2*h) {
+                for (int j = i; j < i + h; ++j) {
+                    float x = expected[offset + j], y = expected[offset + j + h];
+                    expected[offset + j] = x + y;
+                    expected[offset + j + h] = x - y;
+                }
+            }
+            scale *= 0.707106781f;
+        }
+        for (int i = 0; i < block_size; ++i) expected[offset + i] *= scale;
+    }
+    auto * dst = ggml_hadamard(ctx, src, block_size);
+    for (int threads : { 1, 4, 7 }) {
+        std::memset(dst->data, 0xff, ggml_nbytes(dst));
+        for (int thread = 0; thread < threads; ++thread) {
+            iqk_hadamard(dst, thread, threads);
+        }
+        check(std::memcmp(dst->data, expected.data(), expected.size() * sizeof(float)) == 0,
+                "Hadamard differs from scalar reference");
+        check(std::memcmp(src->data, saved.data(), saved.size()) == 0, "Hadamard changed its input");
+    }
+    ggml_free(ctx);
+}
+
 int main() {
     ggml_time_init();
     test_pq2_repack_layout();
@@ -189,5 +236,11 @@ int main() {
         }
     }
     std::puts("ternary matmul: decode, batches and row tails OK");
+    for (int block_size : { 2, 4, 8, 16, 32, 64, 128, 256, 512, 2048 }) {
+        test_hadamard(GGML_TYPE_F32, block_size);
+        test_hadamard(GGML_TYPE_F16, block_size);
+        if (block_size >= 32) test_hadamard(GGML_TYPE_Q8_0, block_size);
+    }
+    std::puts("Hadamard: scalar equality, dequantization and worker tails OK");
     return 0;
 }

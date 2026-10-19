@@ -501,14 +501,47 @@ void iqk_mul_multi_add(struct ggml_tensor * dst, int ith, int nth) {
 }
 
 namespace {
-template <typename T>
-void fast_ht(int n, T * values) {
+void fast_ht(int n, float * values) {
     constexpr float ksqrt2 = 0.707106781f;
     float scale = 1;
+#ifdef __AVX512F__
+    if (n >= 16) {
+        // Complete the first four butterfly stages in registers.
+        for (int i = 0; i < n; i += 16) {
+            auto v = _mm512_loadu_ps(values + i);
+            auto p = _mm512_permute_ps(v, _MM_SHUFFLE(2, 3, 0, 1));
+            v = _mm512_mask_sub_ps(_mm512_add_ps(v, p), 0xaaaa, p, v);
+            p = _mm512_permute_ps(v, _MM_SHUFFLE(1, 0, 3, 2));
+            v = _mm512_mask_sub_ps(_mm512_add_ps(v, p), 0xcccc, p, v);
+            p = _mm512_shuffle_f32x4(v, v, _MM_SHUFFLE(2, 3, 0, 1));
+            v = _mm512_mask_sub_ps(_mm512_add_ps(v, p), 0xf0f0, p, v);
+            p = _mm512_shuffle_f32x4(v, v, _MM_SHUFFLE(1, 0, 3, 2));
+            v = _mm512_mask_sub_ps(_mm512_add_ps(v, p), 0xff00, p, v);
+            _mm512_storeu_ps(values + i, v);
+        }
+        for (int h = 16; h < n; h <<= 1) {
+            for (int i = 0; i < n; i += 2*h) {
+                for (int j = i; j < i + h; j += 16) {
+                    auto x = _mm512_loadu_ps(values + j);
+                    auto y = _mm512_loadu_ps(values + j + h);
+                    _mm512_storeu_ps(values + j, _mm512_add_ps(x, y));
+                    _mm512_storeu_ps(values + j + h, _mm512_sub_ps(x, y));
+                }
+            }
+        }
+        // Preserve the scalar normalization and order of floating-point operations.
+        for (int h = 1; h < n; h <<= 1) scale *= ksqrt2;
+        auto vscale = _mm512_set1_ps(scale);
+        for (int i = 0; i < n; i += 16) {
+            _mm512_storeu_ps(values + i, _mm512_mul_ps(_mm512_loadu_ps(values + i), vscale));
+        }
+        return;
+    }
+#endif
     for (int h = 1; h < n; h <<= 1) {
         for (int i = 0; i < n; i += 2*h) {
             for (int j = i; j < i + h; ++j) {
-                T x = values[j], y = values[j + h];
+                float x = values[j], y = values[j + h];
                 values[j+0] = x + y;
                 values[j+h] = x - y;
             }
