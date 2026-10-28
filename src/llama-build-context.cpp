@@ -2962,6 +2962,7 @@ ggml_cgraph * llm_build_context::llama_build_graph(
                 result = llm.build_mellum();
             } break;
         case LLM_ARCH_LFM2:
+        case LLM_ARCH_LFM3:
         case LLM_ARCH_LFM2MOE:
             {
                 result = llm.build_lfm2();

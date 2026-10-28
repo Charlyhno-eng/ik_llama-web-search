@@ -658,6 +658,7 @@ void llm_load_hparams(
                 }
             } break;
         case LLM_ARCH_LFM2:
+        case LLM_ARCH_LFM3:
         case LLM_ARCH_LFM2MOE:
             {
                 const bool is_moe = model.arch == LLM_ARCH_LFM2MOE;
@@ -713,6 +714,7 @@ void llm_load_hparams(
                     hparams.n_layer_dense_lead = hparams.n_layer;
 
                     switch (hparams.n_ff()) {
+                        case 7680: model.type = e_model::MODEL_1_7B; break;
                         case 2560: model.type = e_model::MODEL_220M; break;
                         case 4608: model.type = e_model::MODEL_350M; break;
                         case 6912: model.type = e_model::MODEL_700M; break;
@@ -729,6 +731,23 @@ void llm_load_hparams(
                     for (uint32_t i = 0; i < hparams.n_layer; ++i) {
                         hparams.swa_layers[i] = hparams.recurrent_layer_arr[i] ? 0 : 1;
                     }
+                    if (model.arch == LLM_ARCH_LFM3) {
+                        ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.swa_layers, hparams.n_layer);
+                        ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA, hparams.rope_freq_base_train_swa);
+                        bool has_swa = false;
+                        for (uint32_t i = 0; i < hparams.n_layer; ++i) {
+                            if (hparams.swa_layers[i] && hparams.is_recurrent(i)) {
+                                throw std::runtime_error("LFM3 shortconv layers cannot use sliding attention");
+                            }
+                            has_swa |= hparams.swa_layers[i] != 0;
+                        }
+                        if (!has_swa) {
+                            throw std::runtime_error("LFM3 requires sliding window attention layers");
+                        }
+                    }
+                }
+                if (model.arch == LLM_ARCH_LFM3 && hparams.n_swa == 0) {
+                    throw std::runtime_error("LFM3 requires a non-zero sliding window");
                 }
             } break;
         case LLM_ARCH_QWEN3NEXT:

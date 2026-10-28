@@ -15,6 +15,7 @@ Configuration example (repeat variants in reverse order for an ABBA comparison):
 Set "interleave": true with two variants to keep both servers loaded and alternate
 requests in ABBA order (one generation at a time). Otherwise servers run serially.
 Variants also accept threads_batch, args (additional server arguments), and env.
+Use runtime="llama.cpp" for an upstream server (omits ik-specific flags).
 Optional prompt_text and padding_text replace the default synthetic French prompt.
 Alternatively messages applies the model's chat template and uses the complete prompt.
 chat_template_kwargs passes template options such as enable_thinking to that template.
@@ -69,10 +70,13 @@ def server(variant, model, output, index):
     binary = str(Path(variant.get("binary", "build/bin/llama-server")).resolve())
     command = [
         binary, "-m", model, "-c", "4096", "-t", str(threads),
-        "-tb", str(variant.get("threads_batch", threads)), "-rtr", "--jinja",
-        "--reasoning-tokens", "none", "--host", "127.0.0.1", "--port", str(port),
+        "-tb", str(variant.get("threads_batch", threads)), "--jinja",
+        "--host", "127.0.0.1", "--port", str(port),
         "-np", "1", "--no-context-shift",
-    ] + variant.get("args", [])
+    ]
+    if variant.get("runtime", "ik_llama") == "ik_llama":
+        command += ["-rtr", "--reasoning-tokens", "none"]
+    command += variant.get("args", [])
     label = re.sub(r"[^a-zA-Z0-9_.-]", "_", variant["name"] + "-" + Path(model).stem)
     log_path = output.parent / f"{output.stem}-{index}-{label}.log"
     with log_path.open("w", encoding="utf-8") as log:

@@ -81,6 +81,9 @@ static ggml_tensor * build_lfm2_shortconv(
     return y;
 }
 
+// LFM3 shares the short-convolution and FFN blocks. Its attention layers add
+// per-head gates (handled by build_std_attention) and mix global/SWA RoPE.
+// Reference: ggml-org/llama.cpp PR #31252.
 ggml_cgraph * llm_build_context::build_lfm2() {
     ggml_cgraph * gf = new_graph_custom();
 
@@ -88,6 +91,8 @@ ggml_cgraph * llm_build_context::build_lfm2() {
 
     auto inp_pos = build_inp_pos();
     auto KQ_mask = build_inp_KQ_mask();
+    const bool is_lfm3 = model.arch == LLM_ARCH_LFM3;
+    auto KQ_mask_swa = is_lfm3 ? build_inp_KQ_mask_swa() : nullptr;
     auto inp_out_ids = n_tokens > 1 ? build_inp_out_ids() : nullptr;
 
     // one-slot sequence map; the state row is selected from s_l below
@@ -144,10 +149,16 @@ ggml_cgraph * llm_build_context::build_lfm2() {
             }
         } else {
             // the shared operator norm above is the input to GQA (null attn norm: no double norm)
+            const bool is_swa = is_lfm3 && hparams.swa_layers[il];
             op_out = build_std_attention(gf, nullptr, norm,
-                    inp_pos, nullptr, nullptr, KQ_mask, nullptr, nullptr,
-                    KQ_scale, 0.0f, hparams.n_swa, il,
+                    inp_pos, nullptr, model.layers[il].rope_freqs, is_swa ? KQ_mask_swa : KQ_mask, nullptr, nullptr,
+                    KQ_scale, 0.0f, is_lfm3 ? (is_swa ? hparams.n_swa : 0) : hparams.n_swa, il,
                     true, false, false, false, false);
+        }
+
+        if (is_lfm3 && model.layers[il].attn_post_norm) {
+            op_out = llm_build_norm(ctx0, op_out, hparams, model.layers[il].attn_post_norm,
+                    nullptr, LLM_NORM_RMS, cb, il);
         }
 
         if (il == n_layer - 1 && inp_out_ids != nullptr) {
@@ -163,7 +174,8 @@ ggml_cgraph * llm_build_context::build_lfm2() {
                     model.layers[il].ffn_up, nullptr, nullptr,
                     model.layers[il].ffn_gate, nullptr, nullptr,
                     model.layers[il].ffn_down, nullptr, nullptr,
-                    nullptr, LLM_FFN_SILU, LLM_FFN_PAR, cb, il, gf, true, false);
+                    nullptr, LLM_FFN_SILU, LLM_FFN_PAR, cb, il, gf, true, false,
+                    nullptr, model.layers[il].ffn_post_norm);
         } else {
             GGML_ASSERT(model.layers[il].ffn_down_exps != nullptr);
             inpL = llm_build_std_moe_ffn(ctx0, lctx, model.layers[il].ffn_norm, inpL,

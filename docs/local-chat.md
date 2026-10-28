@@ -18,6 +18,41 @@ AVX-512 builds also vectorize the Hadamard butterflies, keeping the first four s
 
 A [follow-up campaign](performance-followup-2026-10-19.md) tested LTO, targeted PGO, multiplication/Hadamard fusion, a 32-row PQ2 kernel and n-gram speculation. It retained no additional runtime optimization: generation gains were not consistent across the comparisons, and the original binaries and settings were restored.
 
+### LFM3 text models
+
+The bundled engine also supports LiquidAI's `lfm3` GGUF architecture, including
+LFM3-1.7B Q4_K_M. It uses the existing optimized short-convolution and gated
+attention kernels, with separate full/sliding attention masks and RoPE bases,
+shared global RoPE factors, and optional paired sandwich norms. This is native
+support in the same engine; selecting LFM3 does not replace the Qwen or Bonsai
+runtime. Text models are supported; LFM3 vision/audio architectures are separate.
+The implementation follows [llama.cpp PR #31252](https://github.com/ggml-org/llama.cpp/pull/31252),
+merged on October 27, 2026.
+See the [LFM3 validation and performance comparison](performance-lfm3-2026-10-28.md)
+for real-GGUF checks and the before/after Qwen/Bonsai measurements.
+
+If updating an existing checkout with an older compiled server, rebuild it before
+reloading the model in Settings:
+
+```sh
+cmake --build build --target llama-server --config Release -j 2
+```
+
+The [official model card](https://huggingface.co/LiquidAI/LFM3-1.7B) recommends
+temperature 0.1 for general chat. The app keeps your selected temperature; set it
+to 0.1 in Settings if desired. The GGUF's top-k and repetition-penalty defaults
+are read by the engine. No model file conversion is required.
+
+An opt-in real-model integration check exercises the app loader and streaming
+chat, follow-up history, reset convolution state and chunked prompts on both
+sides of the 256-token sliding-window boundary. It can also compare next-token
+probabilities with an LFM3-capable official llama.cpp build:
+
+```sh
+python scripts/verify-lfm3.py /path/to/LFM3-1.7B-Q4_K_M.gguf .local-chat/lfm3-check.json \
+  --reference /path/to/upstream/llama-server
+```
+
 Context sizes are 2,048, 4,096, 6,144 and 8,192 tokens (default 4,096). Generation CPU threads accept 1–256 (default four). Prompt CPU threads accept 0–256 (default zero, which follows generation threads); a positive value is passed independently as `--threads-batch`. Temperature accepts finite numbers from 0–2 (default 0.5). Maximum response length accepts integers from 128–4,096 tokens (default 1,024). All controls are in Settings and saved together with the model path. Missing or invalid saved generation values fall back to the shared defaults in `local_chat/config.py`, so older settings migrate automatically. Local changes are written only to the Git-ignored `.local-chat/settings.json`, never to the shared defaults. Model selection checks `.gguf`, file existence, magic bytes and GGUF version 2/3. This does not guarantee model architecture support; the engine log explains loading failures.
 
 Settings are written atomically to `.local-chat/settings.json`. Engine and build logs are replaced on each load/build. `LOCAL_CHAT_DATA_DIR` overrides this directory. Moving or deleting a model requires selecting its new location. Ctrl+C cancels active work and stops owned processes. Linux/macOS use an isolated process group with SIGTERM and a SIGKILL fallback; Windows uses a new process group and `taskkill /T /F` to stop the owned tree, including compiler processes. Closing the browser alone does not stop the application.
