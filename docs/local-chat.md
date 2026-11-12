@@ -53,6 +53,51 @@ python scripts/verify-lfm3.py /path/to/LFM3-1.7B-Q4_K_M.gguf .local-chat/lfm3-ch
   --reference /path/to/upstream/llama-server
 ```
 
+### Raon-1 nano
+
+See the [CPU performance and existing-model regression check](performance-raon-2026-11-12.md)
+for Raon throughput and measured Qwen/Bonsai/LFM3 before/after results.
+
+Select `raon-1-nano-Q4_K_M.gguf` in Settings and choose **Save & load**.
+The application reads `general.architecture` from GGUF metadata. For
+`raon1nano`, it downloads and builds a separate CPU ik_llama.cpp engine from
+[PR #2903](https://github.com/ikawrakow/ik_llama.cpp/pull/2903), pinned to
+[`b87a4519321a3430cba206fd130a367ef7f9fb5d`](https://github.com/Bl4ckyou/ik_llama.cpp/commit/b87a4519321a3430cba206fd130a367ef7f9fb5d).
+This contribution implements the architecture from KRAFTON's
+[Raon-1 nano release](https://huggingface.co/KRAFTON/Raon-1-nano).
+It is an external contribution, not yet part of the bundled engine.
+
+The first load requires **Git, internet, CMake and a C++20 compiler** and can
+take several minutes. Sources and compiled binaries are cached in
+`.local-chat/engines/raon1nano-<revision>/` (or under `LOCAL_CHAT_DATA_DIR`).
+Subsequent loads use the cached binary without a download. Build progress is
+available through the application's logs and `.local-chat/build.log`.
+If interrupted, reload the model to retry. Model weights are read in place;
+no conversion or second copy of the GGUF is needed.
+
+Chat, streaming, web retrieval and settings use the same application APIs.
+Other architectures continue to use the bundled engine, including its local
+LFM3 and Bonsai changes. `LLAMA_SERVER`, when set, overrides automatic engine
+selection for all models; its executable must support the selected architecture.
+
+A real-model smoke test exercises loading, French chat, follow-up history,
+cancellation and recovery. Add `--web` to check retrieval of a public page:
+
+```sh
+python scripts/verify-raon.py /path/to/raon-1-nano-Q4_K_M.gguf .local-chat/raon-check.json --web
+```
+
+The test reuses the backend cache and leaves your saved settings unchanged.
+
+Validated on Linux CPU on November 12, 2026 with the local Q4_K_M GGUF,
+4,096-token context and four threads: French streaming, two-turn history,
+cancellation/recovery and public-page retrieval passed; all 70 application
+tests passed. A separate HTTP smoke check also completed DuckDuckGo search,
+page retrieval and streamed generation. That search returned Raon mini pages
+for a nano question, so this checks the pipeline, not source relevance or
+factual accuracy. Local reports are `.local-chat/raon-check.json` and
+`.local-chat/raon-http-search.sse`.
+
 Context sizes are 2,048, 4,096, 6,144 and 8,192 tokens (default 4,096). Generation CPU threads accept 1–256 (default four). Prompt CPU threads accept 0–256 (default zero, which follows generation threads); a positive value is passed independently as `--threads-batch`. Temperature accepts finite numbers from 0–2 (default 0.5). Maximum response length accepts integers from 128–4,096 tokens (default 1,024). All controls are in Settings and saved together with the model path. Missing or invalid saved generation values fall back to the shared defaults in `local_chat/config.py`, so older settings migrate automatically. Local changes are written only to the Git-ignored `.local-chat/settings.json`, never to the shared defaults. Model selection checks `.gguf`, file existence, magic bytes and GGUF version 2/3. This does not guarantee model architecture support; the engine log explains loading failures.
 
 Settings are written atomically to `.local-chat/settings.json`. Engine and build logs are replaced on each load/build. `LOCAL_CHAT_DATA_DIR` overrides this directory. Moving or deleting a model requires selecting its new location. Ctrl+C cancels active work and stops owned processes. Linux/macOS use an isolated process group with SIGTERM and a SIGKILL fallback; Windows uses a new process group and `taskkill /T /F` to stop the owned tree, including compiler processes. Closing the browser alone does not stop the application.

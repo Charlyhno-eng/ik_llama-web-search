@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .config import AppError, ROOT, gguf_path
+from .backends import RAON_REPOSITORY, RAON_REVISION, model_architecture
 
 # Loopback requests must not be redirected through an HTTP_PROXY from the environment.
 LOCAL_HTTP = build_opener(ProxyHandler({}))
@@ -53,7 +54,7 @@ class Engine:
             "warning": self.settings.warning,
         }
 
-    def executable(self):
+    def executable(self, root=None):
         override = os.environ.get("LLAMA_SERVER")
         if override:
             path = Path(override).expanduser().resolve()
@@ -61,12 +62,17 @@ class Engine:
                 raise AppError("LLAMA_SERVER does not point to an accessible executable.")
             return str(path)
         name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
-        for path in (ROOT / "build/bin" / name, ROOT / "build/bin/Release" / name):
+        root = ROOT if root is None else root
+        for path in (root / "build/bin" / name, root / "build/bin/Release" / name):
             if path.is_file() and os.access(path, os.X_OK):
                 return str(path)
         return None
 
-    def ensure_executable(self):
+    def ensure_executable(self, model_path=None):
+        # An explicit executable remains authoritative for every architecture.
+        if model_path and not os.environ.get("LLAMA_SERVER"):
+            if model_architecture(model_path) == "raon1nano":
+                return self.ensure_raon_executable()
         executable = self.executable()
         if executable:
             return executable
@@ -105,6 +111,13 @@ class Engine:
                 "2",
             ],
         ]
+        self.run_commands(commands)
+        executable = self.executable()
+        if not executable:
+            raise AppError("The build did not produce llama-server.")
+        return executable
+
+    def run_commands(self, commands):
         with self.build_log_path.open("w", encoding="utf-8") as log:
             for command in commands:
                 if self.closing.is_set():
@@ -118,12 +131,35 @@ class Engine:
                         raise AppError("Build interrupted because the application closed.")
                 if self.builder.returncode != 0:
                     raise AppError(
-                        "Build failed. Check .local-chat/build.log, then reload the model."
+                        "Engine preparation failed. Check .local-chat/build.log, then reload the model."
                     )
                 self.builder = None
-        executable = self.executable()
+
+    def ensure_raon_executable(self):
+        root = self.settings.directory / "engines" / ("raon1nano-" + RAON_REVISION)
+        executable = self.executable(root)
+        if executable:
+            return executable
+        if not shutil.which("git") or not shutil.which("cmake") or (
+            sys.platform != "win32" and not (shutil.which("c++") or shutil.which("clang++"))
+        ):
+            raise AppError("Raon-1 nano first run requires Git, CMake and a C++20 compiler.")
+        self.state = "building"
+        self.message = "Preparing the Raon-1 nano CPU engine. Download and build may take several minutes."
+        root.mkdir(parents=True, exist_ok=True)
+        self.run_commands([
+            ["git", "init", str(root)],
+            ["git", "-C", str(root), "fetch", "--depth", "1", RAON_REPOSITORY, RAON_REVISION],
+            ["git", "-C", str(root), "checkout", "--detach", RAON_REVISION],
+            ["cmake", "-S", str(root), "-B", str(root / "build"),
+             "-DGGML_NATIVE=ON", "-DLLAMA_BUILD_TESTS=OFF",
+             "-DLLAMA_BUILD_SERVER=ON", "-DCMAKE_BUILD_TYPE=Release"],
+            ["cmake", "--build", str(root / "build"), "--target", "llama-server",
+             "--config", "Release", "-j", "2"],
+        ])
+        executable = self.executable(root)
         if not executable:
-            raise AppError("The build did not produce llama-server.")
+            raise AppError("The Raon-1 nano build did not produce llama-server.")
         return executable
 
     def load(self, data):
@@ -151,7 +187,7 @@ class Engine:
         try:
             self._stop_process(self.process)
             self.process, self.active = None, None
-            executable = self.ensure_executable()
+            executable = self.ensure_executable(value["model_path"])
             gguf_path(value["model_path"])
             if self.closing.is_set():
                 return

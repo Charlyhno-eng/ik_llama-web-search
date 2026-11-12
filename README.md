@@ -70,6 +70,7 @@ If no compiled `llama-server` is present, the application builds it on first mod
 ## Features
 
 - Local GGUF file browser, remembered model path, **2,048–8,192 token context** and adjustable CPU threads.
+- **Raon-1 nano GGUF** support with an automatically selected, pinned ik_llama.cpp engine (Git and internet required for its first build). See [Raon setup](docs/local-chat.md#raon-1-nano).
 - Native **LFM3-1.7B GGUF** support alongside Qwen and Bonsai, using the same optimized engine. See [validation and performance](docs/performance-lfm3-2026-10-28.md); existing checkouts with an older binary must rebuild `llama-server` as described in [Local Chat](docs/local-chat.md#lfm3-text-models).
 - Streaming chat, stop button, saved conversations, navy/light themes and mobile layout. The interface is English; the assistant follows your message's language.
 - **Web search** understands follow-up questions, reformulates ambiguous queries locally, cross-checks focused searches, filters unrelated results and reads relevant public pages. URLs supplied in your message are opened directly; earlier sources can be revisited for fresh evidence.
